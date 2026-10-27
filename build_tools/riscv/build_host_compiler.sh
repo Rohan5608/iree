@@ -38,6 +38,8 @@
 #   IREE_INIT_SUBMODULES    1 (default): fetch llvm-project, stablehlo,
 #                           torch-mlir and the runtime submodules if missing
 #                           (several GB). Set 0 to skip.
+#   IREE_HOST_TOOLS         Tools to build and collect (default: iree-compile
+#                           iree-opt iree-flatcc-cli iree-c-embed-data).
 #   CC / CXX                Host compilers; clang is recommended.
 
 set -xeuo pipefail
@@ -49,7 +51,8 @@ BUILD_DIR="${1:-${IREE_HOST_BUILD_DIR:-build-host}}"
 CMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-Release}"
 IREE_ENABLE_ASSERTIONS="${IREE_ENABLE_ASSERTIONS:-ON}"
 IREE_ENABLE_LLD="${IREE_ENABLE_LLD:-ON}"
-TOOLS=(iree-compile iree-opt iree-flatcc-cli iree-c-embed-data)
+# Space-separated override, e.g. IREE_HOST_TOOLS="iree-compile" to build less.
+read -r -a TOOLS <<< "${IREE_HOST_TOOLS:-iree-compile iree-opt iree-flatcc-cli iree-c-embed-data}"
 
 # The compiler needs these in addition to the runtime submodules.
 if [[ "${IREE_INIT_SUBMODULES:-1}" == "1" ]]; then
@@ -117,4 +120,6 @@ set +x
 echo
 echo "Built host compiler tools in: $(realpath "${HOST_BIN}")"
 echo "  export IREE_HOST_COMPILER_DIR=$(realpath "${HOST_BIN}")   # used by local_ci.sh"
-"${HOST_BIN}/iree-compile" --version | head -3
+if [[ -x "${HOST_BIN}/iree-compile" ]]; then
+  "${HOST_BIN}/iree-compile" --version | head -3
+fi
