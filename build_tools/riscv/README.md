@@ -115,6 +115,9 @@ export IREE_HOST_COMPILER_DIR=$PWD/build-host/host-bin
 ./build_tools/riscv/local_ci.sh onnx e2e            # now uses your iree-compile
 ```
 
+Tests are off by default (you only need the tools). To run the compiler's own
+lit/unit tests for your change, configure with `IREE_HOST_BUILD_TESTS=ON`, then
+`cmake --build build-host --target iree-test-deps` and `ctest --test-dir build-host -R <name>`.
 Rebuilds after a source change take seconds to minutes. `iree-import-onnx` still
 comes from the pip wheels. In CI the equivalent is `compiler_source=build`.
 

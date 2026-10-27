@@ -38,6 +38,10 @@
 #   IREE_INIT_SUBMODULES    1 (default): fetch llvm-project, stablehlo,
 #                           torch-mlir and the runtime submodules if missing
 #                           (several GB). Set 0 to skip.
+#   IREE_HOST_BUILD_TESTS   ON to also configure the compiler tests (lit/FileCheck
+#                           and unit tests) so you can run them with ctest; then
+#                           build them with: cmake --build <build-dir> --target
+#                           iree-test-deps. Default OFF.
 #   IREE_HOST_TOOLS         Tools to build and collect (default: iree-compile
 #                           iree-opt iree-flatcc-cli iree-c-embed-data).
 #   CC / CXX                Host compilers; clang is recommended.
@@ -82,7 +86,7 @@ args=(
 
   # Host compiler only.
   "-DIREE_BUILD_COMPILER=ON"
-  "-DIREE_BUILD_TESTS=OFF"
+  "-DIREE_BUILD_TESTS=${IREE_HOST_BUILD_TESTS:-OFF}"
   "-DIREE_BUILD_SAMPLES=OFF"
   "-DIREE_BUILD_BENCHMARKS=OFF"
   "-DIREE_BUILD_PYTHON_BINDINGS=OFF"
