@@ -17,7 +17,8 @@
 #   --all       Print every test name (default: summary only).
 #   --rvv       Print only the RVV-specific tests (names with rvv/riscv).
 #   --dir NAME  Print the tests of one tests/e2e subdirectory, e.g. matmul.
-#   --runtime   Also count the runtime unit tests.
+#   --runtime   Print the names of the runtime unit tests (runtime/, run
+#               before the e2e tests) instead of the summary.
 #   build-dir   Defaults to "build-riscv-list". Reused if already configured
 #               with tests (a build from build_run_module.sh has none).
 #
@@ -34,14 +35,13 @@ set -euo pipefail
 
 MODE=summary
 DIR_FILTER=""
-WITH_RUNTIME=0
 BUILD_DIR=""
 while (( $# > 0 )); do
   case "$1" in
     --all) MODE=all ;;
     --rvv) MODE=rvv ;;
     --dir) MODE=dir; DIR_FILTER="${2:?--dir needs a name}"; shift ;;
-    --runtime) WITH_RUNTIME=1 ;;
+    --runtime) MODE=runtime ;;
     -h|--help) sed -n '/^# Usage/,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) echo "Unknown option $1" >&2; exit 2 ;;
     *) BUILD_DIR="$1" ;;
@@ -86,9 +86,12 @@ list_tests() {
 }
 
 E2E="$(list_tests "${BUILD_DIR}/tests/e2e" --exclude-regex "${NAME_EXCLUDE}")"
+# Runtime unit tests run on every CI run, whether or not runtime/ was changed.
+RUNTIME="$(list_tests "${BUILD_DIR}/runtime")"
 
 case "${MODE}" in
   all)  echo "${E2E}"; exit 0 ;;
+  runtime) echo "${RUNTIME}"; exit 0 ;;
   rvv)  echo "${E2E}" | grep -i -E 'rvv|riscv' || true; exit 0 ;;
   dir)  echo "${E2E}" | grep -E "^${DIR_FILTER}/" || true; exit 0 ;;
 esac
@@ -109,9 +112,11 @@ echo "${E2E}" | sed -E 's#/.*##' | sort | uniq -c | sort -rn | awk '{ printf "  
 echo
 echo "RVV-specific tests (names with rvv/riscv):"
 echo "${E2E}" | grep -i -E 'rvv|riscv' | sed 's/^/  /' || true
-if (( WITH_RUNTIME )); then
-  echo
-  echo "Runtime unit tests: $(list_tests "${BUILD_DIR}/runtime" | grep -c .)"
-fi
 echo
-echo "More: --all | --rvv | --dir <name> ; disabled ones are marked (Disabled)."
+echo "Runtime unit tests (run first, on every CI run, even if runtime/ is unchanged):"
+echo "  total: $(echo "${RUNTIME}" | grep -c .)"
+echo "${RUNTIME}" | awk -F/ 'NF > 2 { print $1 "/" $2; next } { print $1 }' \
+  | sort | uniq -c | sort -rn | head -12 | awk '{ printf "  %-28s %d\n", $2, $1 }'
+echo "  (top 12 areas; full list with --runtime)"
+echo
+echo "More: --all | --rvv | --dir <name> | --runtime ; disabled ones are marked (Disabled)."
