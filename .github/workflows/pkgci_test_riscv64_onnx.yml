@@ -1,0 +1,118 @@
+# Copyright 2025 The IREE Authors
+#
+# Licensed under the Apache License v2.0 with LLVM Exceptions.
+# See https://llvm.org/LICENSE.txt for license information.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+# Workflow that compiles every ONNX model under tests/riscv64_onnx/models for
+# riscv64 with the vector extension (RVV), runs it on QEMU user-mode emulation
+# and compares the outputs against ONNX Runtime on the host.
+# The concurrency of this workflow is controlled by the caller's job.
+
+name: PkgCI Test RISCV64 ONNX
+
+on:
+  workflow_call:
+    inputs:
+      artifact_run_id:
+        type: string
+        default: ""
+      write-caches:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      artifact_run_id:
+        type: string
+        default: ""
+      write-caches:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  riscv64_onnx:
+    runs-on: ubuntu-24.04
+    env:
+      PACKAGE_DOWNLOAD_DIR: ${{ github.workspace }}/.packages
+      VENV_DIR: ${{ github.workspace }}/.venv
+      GH_TOKEN: ${{ github.token }}
+      CC: clang
+      CXX: clang++
+      BOOTSTRAP_WORK_DIR: ${{ github.workspace }}/.bootstrap
+      RISCV_TOOLCHAIN_ROOT: ${{ github.workspace }}/riscv/toolchain
+      QEMU_PATH_PREFIX: ${{ github.workspace }}/riscv/qemu
+      ONNX_WORK_DIR: ${{ github.workspace }}/build-riscv/onnx_work
+    steps:
+      # General setup.
+      - name: "Checking out repository"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: "Checking out runtime submodules"
+        run: ./build_tools/scripts/git/update_runtime_submodules.sh
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          # Must match the subset of versions built in pkgci_build_packages.
+          python-version: "3.11"
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        with:
+          key: ${{ github.job }}
+          save: ${{ inputs.write-caches == 1 }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ inputs.artifact_run_id == '' }}
+        with:
+          name: linux_x86_64_release_packages
+          path: ${{ env.PACKAGE_DOWNLOAD_DIR }}
+      - name: Install build dependencies
+        run: sudo apt update && sudo apt install -y ninja-build
+      - name: Setup base venv
+        run: |
+          ./build_tools/pkgci/setup_venv.py ${VENV_DIR} \
+            --artifact-path=${PACKAGE_DOWNLOAD_DIR} \
+            --fetch-gh-workflow=${{ inputs.artifact_run_id }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install ONNX test requirements
+        run: |
+          source ${VENV_DIR}/bin/activate
+          python -m pip install -r tests/riscv64_onnx/requirements.txt
+
+      # Same RISC-V clang toolchain (sysroot) and QEMU as pkgci_test_riscv64.
+      - name: Bootstrap
+        env:
+          IREE_ARTIFACT_URL: "https://sharkpublic.blob.core.windows.net/sharkpublic/GCP-Migration-Files"
+          RISCV_CLANG_TOOLCHAIN_FILE_NAME: "toolchain_iree_manylinux_2_28_20231012.tar.gz"
+          QEMU_FILE_NAME: "qemu-riscv_8.1.2_manylinux_2.28_20231026.tar.gz"
+        run: |
+          mkdir -p ${{ env.BOOTSTRAP_WORK_DIR }}
+          mkdir -p ${{ env.RISCV_TOOLCHAIN_ROOT }}
+          mkdir -p ${{ env.QEMU_PATH_PREFIX }}
+          wget --progress=bar:force:noscroll --directory-prefix="${BOOTSTRAP_WORK_DIR}" "${IREE_ARTIFACT_URL}/${RISCV_CLANG_TOOLCHAIN_FILE_NAME}"
+          tar -C "${{ env.RISCV_TOOLCHAIN_ROOT }}" -xf "${BOOTSTRAP_WORK_DIR}/${RISCV_CLANG_TOOLCHAIN_FILE_NAME}" --no-same-owner --strip-components=1
+          wget --progress=bar:force:noscroll --directory-prefix="${BOOTSTRAP_WORK_DIR}" "${IREE_ARTIFACT_URL}/${QEMU_FILE_NAME}"
+          tar -C "${{ env.QEMU_PATH_PREFIX }}" -xf "${BOOTSTRAP_WORK_DIR}/${QEMU_FILE_NAME}" --no-same-owner --strip-components=1
+
+      - name: Build riscv64 iree-run-module
+        env:
+          IREE_HOST_BIN_DIR: ${{ env.VENV_DIR }}/bin
+          IREE_READ_REMOTE_CCACHE: 0
+          IREE_WRITE_REMOTE_CCACHE: 0
+          IREE_READ_LOCAL_CCACHE: 1
+          IREE_WRITE_LOCAL_CCACHE: ${{ inputs.write-caches }}
+        run: ./build_tools/riscv/build_run_module.sh
+      - name: Run ONNX models on riscv64 (RVV) under QEMU vs ONNX Runtime
+        env:
+          QEMU_BIN: ${{ env.QEMU_PATH_PREFIX }}/qemu-riscv64
+        run: |
+          source ${VENV_DIR}/bin/activate
+          ./build_tools/riscv/run_onnx_tests.sh
+      - name: Upload intermediates and report
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: riscv64_onnx_failures
+          path: |
+            build-riscv/onnx_junit.xml
+            build-riscv/onnx_work
