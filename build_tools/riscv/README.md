@@ -6,6 +6,7 @@ CI and local tooling for a fork that develops the `riscv64` + RVV target.
 | --- | --- |
 | Set up a new machine | `build_tools/riscv/setup_dev.sh` |
 | Run what CI runs, locally | `build_tools/riscv/local_ci.sh lint onnx` (or `all`) |
+| See which e2e tests CI runs for riscv64 | `build_tools/riscv/list_e2e_tests.sh` (`--rvv`, `--dir matmul`, `--all`) |
 | Add a test | drop a `.onnx` into `tests/riscv64_onnx/models/` |
 | Push safely | `git push` (the pre-push hook runs the ONNX/QEMU tests) |
 | Stop upstream workflows from running on the fork | `build_tools/riscv/disable_upstream_workflows.sh` |
