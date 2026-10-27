@@ -1,0 +1,173 @@
+# Copyright 2025 The IREE Authors
+#
+# Licensed under the Apache License v2.0 with LLVM Exceptions.
+# See https://llvm.org/LICENSE.txt for license information.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+# CI for a fork that develops the RISC-V 64 + RVV target.
+#
+# Upstream's `ci.yml`/`pkgci.yml` need runner pools that only exist in the
+# iree-org organization (`azure-linux-scale`, GPU machines) and test many
+# targets. This workflow only needs GitHub-hosted runners and runs:
+#
+#   1. lint             Same pre-commit checks as upstream's lint.yml.
+#   2. packages_*       The host compiler/runtime wheels the tests consume.
+#   3. riscv64_e2e      Upstream's riscv64 e2e suite (cross-compiled CTest on
+#                       QEMU with RVV), via pkgci_test_riscv64.yml.
+#   4. riscv64_onnx     Every ONNX model in tests/riscv64_onnx/models vs ONNX
+#                       Runtime, via pkgci_test_riscv64_onnx.yml.
+#   5. summary          One status to make a required check.
+#
+# Where the host compiler comes from (`compiler_source`):
+#   nightly  (default) Latest nightly iree-base-compiler/-runtime wheels.
+#                      Fast, but does NOT contain compiler changes from this
+#                      branch.
+#   stable             Latest stable wheels from PyPI. Same caveat.
+#   build              Build the compiler from this branch (Docker manylinux,
+#                      same as upstream PkgCI). Needed to test compiler
+#                      changes. Slow on a cold cache (hours on a 4-core
+#                      runner); a larger runner via `build_runner` helps.
+#
+# Set it per run (workflow_dispatch input) or for all runs with the repository
+# variable RISCV_COMPILER_SOURCE (Settings -> Secrets and variables -> Actions
+# -> Variables). RISCV_BUILD_RUNNER likewise selects the runner label used for
+# `build`.
+
+name: RISC-V CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      compiler_source:
+        description: Where the host compiler comes from
+        type: choice
+        options:
+          - nightly
+          - stable
+          - build
+        default: nightly
+      build_runner:
+        description: Runner label for compiler_source=build
+        type: string
+        default: ""
+  pull_request:
+  push:
+    branches:
+      - main
+      - "riscv/**"
+
+concurrency:
+  # Cancel superseded runs for the same PR or branch.
+  group: ${{ github.workflow }}-${{ github.event.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  config:
+    runs-on: ubuntu-24.04
+    outputs:
+      compiler-source: ${{ steps.config.outputs.compiler-source }}
+      build-runner: ${{ steps.config.outputs.build-runner }}
+    steps:
+      - name: Resolve options
+        id: config
+        env:
+          INPUT_SOURCE: ${{ inputs.compiler_source }}
+          VAR_SOURCE: ${{ vars.RISCV_COMPILER_SOURCE }}
+          INPUT_RUNNER: ${{ inputs.build_runner }}
+          VAR_RUNNER: ${{ vars.RISCV_BUILD_RUNNER }}
+        run: |
+          source="${INPUT_SOURCE:-${VAR_SOURCE:-nightly}}"
+          runner="${INPUT_RUNNER:-${VAR_RUNNER:-ubuntu-24.04}}"
+          case "${source}" in
+            nightly|stable|build) ;;
+            *) echo "::error::Invalid compiler source '${source}'"; exit 1 ;;
+          esac
+          echo "compiler-source=${source}" >> "${GITHUB_OUTPUT}"
+          echo "build-runner=${runner}" >> "${GITHUB_OUTPUT}"
+          echo ":gear: Compiler source: \`${source}\`" >> "${GITHUB_STEP_SUMMARY}"
+
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checking out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Initializing llvm-project submodule
+        run: git submodule update --init --depth=1 third_party/llvm-project
+      - name: Setting up python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - name: Running pre-commit
+        uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
+
+  packages_pip:
+    name: packages (${{ needs.config.outputs.compiler-source }} wheels)
+    needs: config
+    if: ${{ needs.config.outputs.compiler-source != 'build' }}
+    runs-on: ubuntu-24.04
+    env:
+      COMPILER_SOURCE: ${{ needs.config.outputs.compiler-source }}
+    steps:
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          # Must match the python version used by the test workflows.
+          python-version: "3.11"
+      - name: Download wheels
+        run: |
+          mkdir wheelhouse
+          extra_args=()
+          if [[ "${COMPILER_SOURCE}" == "nightly" ]]; then
+            extra_args=(--pre --find-links https://iree.dev/pip-release-links.html)
+          fi
+          python -m pip download --no-deps "${extra_args[@]}" \
+            iree-base-compiler iree-base-runtime --dest wheelhouse
+          ls -l wheelhouse
+      - name: Upload wheel artifacts
+        # Same artifact name that upstream's PkgCI test workflows download.
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux_x86_64_release_packages
+          path: wheelhouse/iree*.whl
+          if-no-files-found: error
+
+  packages_build:
+    name: packages (build from branch)
+    needs: config
+    if: ${{ needs.config.outputs.compiler-source == 'build' }}
+    uses: ./.github/workflows/pkgci_build_packages.yml
+    with:
+      runs-on: ${{ needs.config.outputs.build-runner }}
+
+  riscv64_e2e:
+    name: RISC-V 64 e2e
+    needs: [packages_pip, packages_build]
+    # Run when whichever package job was selected succeeded (the other is
+    # skipped).
+    if: ${{ !cancelled() && !failure() }}
+    uses: ./.github/workflows/pkgci_test_riscv64.yml
+    with:
+      write-caches: "1"
+
+  riscv64_onnx:
+    name: RISC-V 64 ONNX
+    needs: [packages_pip, packages_build]
+    if: ${{ !cancelled() && !failure() }}
+    uses: ./.github/workflows/pkgci_test_riscv64_onnx.yml
+    with:
+      write-caches: "1"
+
+  summary:
+    # Use this job as the required status check in branch protection.
+    name: RISC-V CI summary
+    if: always()
+    needs:
+      - config
+      - lint
+      - packages_pip
+      - packages_build
+      - riscv64_e2e
+      - riscv64_onnx
+    uses: ./.github/workflows/workflow_summary.yml
+    with:
+      jobs-json: ${{ toJson(needs) }}
