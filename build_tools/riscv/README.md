@@ -7,6 +7,7 @@ CI and local tooling for a fork that develops the `riscv64` + RVV target.
 | Set up a new machine | `build_tools/riscv/setup_dev.sh` |
 | Run what CI runs, locally | `build_tools/riscv/local_ci.sh lint onnx` (or `all`) |
 | See which e2e tests CI runs for riscv64 | `build_tools/riscv/list_e2e_tests.sh` (`--rvv`, `--dir matmul`, `--all`) |
+| Test compiler changes from your checkout | `build_tools/riscv/build_host_compiler.sh` (see below) |
 | Add a test | drop a `.onnx` into `tests/riscv64_onnx/models/` |
 | Push safely | `git push` (the pre-push hook runs the ONNX/QEMU tests) |
 | Stop upstream workflows from running on the fork | `build_tools/riscv/disable_upstream_workflows.sh` |
@@ -100,6 +101,22 @@ export RISCV_TOOLCHAIN_ROOT=... QEMU_BIN=.../qemu-riscv64
 ./build_tools/riscv/local_ci.sh lint onnx       # fast loop
 ./build_tools/riscv/local_ci.sh e2e             # full upstream riscv64 suite (slow)
 ```
+
+### Testing compiler changes locally
+
+The default flow uses pip wheels as the host compiler, so edits under
+`compiler/` have no effect on it. To build the compiler from your checkout
+(only `iree-compile`, `iree-opt` and the two helper tools, with just the
+llvm-cpu and vmvx backends):
+
+```bash
+./build_tools/riscv/build_host_compiler.sh          # first build: an hour or more
+export IREE_HOST_COMPILER_DIR=$PWD/build-host/host-bin
+./build_tools/riscv/local_ci.sh onnx e2e            # now uses your iree-compile
+```
+
+Rebuilds after a source change take seconds to minutes. `iree-import-onnx` still
+comes from the pip wheels. In CI the equivalent is `compiler_source=build`.
 
 ### Git hooks (pre-commit)
 

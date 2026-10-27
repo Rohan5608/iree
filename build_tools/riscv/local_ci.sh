@@ -21,6 +21,9 @@
 # Environment (same as CI):
 #   IREE_HOST_BIN_DIR     Directory with iree-compile & friends (default
 #                         ./.venv/bin if present).
+#   IREE_HOST_COMPILER_DIR  Compiler built from this checkout by
+#                         build_host_compiler.sh (<build>/host-bin); takes
+#                         precedence over the pip compiler.
 #   RISCV_TOOLCHAIN_ROOT  RISC-V clang toolchain with sysroot.
 #   QEMU_BIN              qemu-riscv64.
 # Extra pytest args for `onnx` can be given via ONNX_PYTEST_ARGS, e.g.
@@ -34,6 +37,12 @@ cd "${REPO_ROOT}"
 if [[ -d .venv/bin ]]; then
   export PATH="${REPO_ROOT}/.venv/bin:${PATH}"
   export IREE_HOST_BIN_DIR="${IREE_HOST_BIN_DIR:-${REPO_ROOT}/.venv/bin}"
+fi
+# Use a compiler built from this checkout (build_host_compiler.sh) instead of
+# the pip one, e.g. IREE_HOST_COMPILER_DIR=$PWD/build-host/host-bin.
+if [[ -n "${IREE_HOST_COMPILER_DIR:-}" ]]; then
+  export PATH="${IREE_HOST_COMPILER_DIR}:${PATH}"
+  export IREE_HOST_BIN_DIR="${IREE_HOST_COMPILER_DIR}"
 fi
 BUILD_DIR="${IREE_TARGET_BUILD_DIR:-build-riscv}"
 
