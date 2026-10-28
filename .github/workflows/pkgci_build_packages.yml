@@ -7,11 +7,18 @@
 name: PkgCI Build Packages
 on:
   workflow_call:
+    inputs:
+      # Forks without access to the iree-org runner pool can pass a
+      # GitHub-hosted runner label such as `ubuntu-24.04` (see
+      # .github/workflows/riscv64_ci.yml).
+      runs-on:
+        type: string
+        default: azure-linux-scale
 
 jobs:
   linux_x86_64_release_packages:
     name: Linux Release (x86_64)
-    runs-on: azure-linux-scale
+    runs-on: ${{ inputs.runs-on }}
     strategy:
       fail-fast: false
     env:
@@ -19,6 +26,14 @@ jobs:
       MANYLINUX_DOCKER_IMAGE: ghcr.io/iree-org/manylinux_x86_64@sha256:2e0246137819cf10ed84240a971f9dd75cc3eb62dc6907dfd2080ee966b3c9f4
       PACKAGE_SUFFIX: ""
     steps:
+      - name: Free disk space (GitHub-hosted runners)
+        # The LLVM/IREE compiler build needs far more than the ~14GB that is
+        # free by default on GitHub-hosted runners.
+        if: ${{ !contains(inputs.runs-on, 'azure') }}
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          df -h /
       - name: Prefetch Docker
         run: |
           docker pull "$MANYLINUX_DOCKER_IMAGE" &

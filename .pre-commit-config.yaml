@@ -4,6 +4,11 @@
 
 exclude: "third_party/"
 
+# `pre-commit install` sets up both: lint on commit, and on push the lint hooks
+# re-run on the pushed files (catching commits made with --no-verify) plus the
+# RISC-V ONNX/QEMU check (the `riscv64-onnx-qemu` hook below).
+default_install_hook_types: [pre-commit, pre-push]
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
@@ -69,6 +74,18 @@ repos:
 
   - repo: local
     hooks:
+      # Runs tests/riscv64_onnx (riscv64 + RVV on QEMU vs ONNX Runtime) before
+      # pushing. Skips itself with a message if the local tools are missing;
+      # see build_tools/riscv/pre_push_check.sh for the knobs.
+      - id: riscv64-onnx-qemu
+        name: RISC-V 64 RVV ONNX tests on QEMU (pre-push)
+        entry: ./build_tools/riscv/pre_push_check.sh
+        language: system
+        stages: [pre-push]
+        always_run: true
+        pass_filenames: false
+        verbose: true
+
       - id: buildifier
         name: Run buildifier
         entry: buildifier
