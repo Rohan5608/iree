@@ -105,6 +105,9 @@ jobs:
       - name: Run ONNX models on riscv64 (RVV) under QEMU vs ONNX Runtime
         env:
           QEMU_BIN: ${{ env.QEMU_PATH_PREFIX }}/qemu-riscv64
+          # Vector register widths (bits) to test. Override for all runs with
+          # the repository variable RISCV_ONNX_VLENS.
+          ONNX_VLENS: ${{ vars.RISCV_ONNX_VLENS || '128,256,512,1024' }}
         run: |
           source ${VENV_DIR}/bin/activate
           ./build_tools/riscv/run_onnx_tests.sh

@@ -11,6 +11,14 @@ every model the test:
 4. compares every output against ONNX Runtime (`rtol=1e-4`, `atol=1e-5` by
    default; integer and bool outputs must match exactly).
 
+Every model is tested at each vector register width (VLEN) in `--vlens`
+(env `ONNX_VLENS`, default `512`; CI uses `128,256,512,1024`). For a width N the
+model is compiled with `+zvlNb` and run on a QEMU CPU with `vlen=N`, so the code
+is both generated and executed for that width. Test ids look like
+`vlen256-mlp_softmax.onnx`; select with e.g. `-k vlen256`. Compiling for one
+width and running on a different one is not a valid test: code for a larger
+VLEN than the CPU has runs without error but gives wrong results.
+
 Models are found recursively, so subdirectories are fine. Inputs are random
 but deterministic (seeded), generated from the model's input signature.
 
@@ -56,6 +64,7 @@ Useful options (flag or environment variable; see `conftest.py`):
 | --- | --- | --- |
 | `--models-dir` | `ONNX_MODELS_DIR` | Use another directory of models |
 | `--work-dir` | `ONNX_WORK_DIR` | Keep MLIR/vmfb/npy intermediates |
+| `--vlens` | `ONNX_VLENS` | Comma-separated VLENs in bits, e.g. `128,256,512,1024` |
 | `--rtol`, `--atol`, `--seed` | | Tolerances / input seed |
 | `--extra-compile-flags` | `IREE_EXTRA_COMPILE_FLAGS` | Append `iree-compile` flags |
 | `--override-compile-flags` | `IREE_OVERRIDE_COMPILE_FLAGS` | Replace the riscv64+RVV flag set (e.g. another VLEN; also change `--qemu-cpu`) |

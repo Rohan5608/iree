@@ -90,6 +90,13 @@ def pytest_addoption(parser):
         help="Replace the default riscv64+RVV iree-compile flags entirely, "
         "shell-quoted (env: IREE_OVERRIDE_COMPILE_FLAGS).",
     )
+    g.addoption(
+        "--vlens",
+        default=_env("ONNX_VLENS", "512"),
+        help="Comma-separated RVV vector register widths in bits to test, e.g. "
+        "'128,256,512,1024'. Each model is compiled for (+zvl<N>b) and run on "
+        "a QEMU CPU with exactly that VLEN (env: ONNX_VLENS).",
+    )
     g.addoption("--rtol", type=float, default=1e-4, help="Relative tolerance.")
     g.addoption("--atol", type=float, default=1e-5, help="Absolute tolerance.")
     g.addoption("--seed", type=int, default=0, help="Input generation seed.")
@@ -101,9 +108,24 @@ def pytest_addoption(parser):
     )
 
 
+def _parse_vlens(text):
+    try:
+        vlens = [int(v) for v in text.split(",") if v.strip()]
+    except ValueError:
+        vlens = []
+    # RVV requires a power of two VLEN; QEMU supports up to 1024 in older
+    # versions and more in newer ones.
+    if not vlens or any(v < 32 or v & (v - 1) for v in vlens):
+        pytest.exit(f"--vlens must be powers of two >= 32 (got '{text}')", returncode=2)
+    return list(dict.fromkeys(vlens))
+
+
 def pytest_generate_tests(metafunc):
     if "model_path" not in metafunc.fixturenames:
         return
+    if "vlen" in metafunc.fixturenames:
+        vlens = _parse_vlens(metafunc.config.getoption("vlens"))
+        metafunc.parametrize("vlen", vlens, ids=[f"vlen{v}" for v in vlens])
     models_dir = Path(metafunc.config.getoption("models_dir")).resolve()
     models = sorted(models_dir.rglob("*.onnx"))
     ids = [m.relative_to(models_dir).as_posix() for m in models]

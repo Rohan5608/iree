@@ -18,6 +18,7 @@ For a given .onnx file the harness:
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import shlex
@@ -56,6 +57,32 @@ _ORT_TYPE_TO_NUMPY = {
     "tensor(uint64)": np.uint64,
     "tensor(bool)": np.bool_,
 }
+
+
+def with_vlen(tools: "Tools", vlen: int) -> "Tools":
+    """Returns |tools| retargeted to a vector register width of |vlen| bits.
+
+    The compiler is told the minimum VLEN (`+zvl<vlen>b`) and QEMU emulates a
+    vector unit of exactly that size, so code is both compiled for and run on
+    the same width. The two must match: code compiled for a larger VLEN than
+    the hardware (or QEMU) provides is invalid.
+    """
+    flags = []
+    for flag in tools.compile_flags:
+        prefix = "--iree-llvmcpu-target-cpu-features="
+        if flag.startswith(prefix):
+            features = [
+                f
+                for f in flag[len(prefix) :].split(",")
+                if not re.fullmatch(r"\+zvl\d+b", f)
+            ]
+            flag = prefix + ",".join(features + [f"+zvl{vlen}b"])
+        flags.append(flag)
+    if re.search(r"\bvlen=\d+", tools.qemu_cpu):
+        cpu = re.sub(r"\bvlen=\d+", f"vlen={vlen}", tools.qemu_cpu)
+    else:
+        cpu = f"{tools.qemu_cpu},vlen={vlen}"
+    return dataclasses.replace(tools, compile_flags=flags, qemu_cpu=cpu)
 
 
 class HarnessError(Exception):

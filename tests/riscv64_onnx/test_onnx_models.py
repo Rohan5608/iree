@@ -15,7 +15,8 @@ import pytest
 import riscv_onnx_harness as harness
 
 
-def test_model_matches_onnxruntime(model_path, tools, work_dir, pytestconfig):
+def test_model_matches_onnxruntime(model_path, vlen, tools, work_dir, pytestconfig):
+    tools = harness.with_vlen(tools, vlen)
     import onnxruntime as ort
 
     config = harness.ModelConfig.load(model_path)
@@ -51,7 +52,7 @@ def test_model_matches_onnxruntime(model_path, tools, work_dir, pytestconfig):
     problems = harness.compare_outputs(expected, actual, rtol, atol)
     if problems:
         pytest.fail(
-            "IREE (riscv64+RVV on QEMU) differs from ONNX Runtime:\n  "
+            f"IREE (riscv64+RVV, VLEN={vlen}, on QEMU) differs from ONNX Runtime:\n  "
             + "\n  ".join(problems),
             pytrace=False,
         )
