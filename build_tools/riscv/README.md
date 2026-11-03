@@ -1,5 +1,8 @@
 # RISC-V 64 + RVV development workflow
 
+For the overall strategy (which files exist, what runs on PR vs nightly vs stable,
+and what is implemented vs proposed) see [STRATEGY.md](STRATEGY.md).
+
 CI and local tooling for a fork that develops the `riscv64` + RVV target.
 
 | You want to... | Run |
