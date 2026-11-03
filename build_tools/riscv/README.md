@@ -55,7 +55,9 @@ Then the workflows fan out:
 ## What this fork runs
 
 `.github/workflows/riscv64_ci.yml` ("RISC-V CI") runs on pull requests, on
-pushes to `main` and `riscv/**` branches, and on demand:
+pushes to `main` and `riscv/**` branches, nightly (cron), on `riscv-stable-*`
+tags, and on demand. The trigger selects a *tier* (`pr`, `nightly`, `stable`;
+see [STRATEGY.md](STRATEGY.md)) that decides the compiler source and model set:
 
 ```text
 config -> lint

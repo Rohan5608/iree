@@ -103,6 +103,8 @@ class ModelConfig:
       extra_compile_flags: Extra iree-compile flags for this model.
       skip:            Reason string; the model is skipped.
       xfail:           Reason string; the model is expected to fail.
+      tier:            "pr" (default) runs in every tier; "slow" runs only in the
+                       nightly and stable tiers (large or slow-to-emulate models).
     """
 
     rtol: float | None = None
@@ -114,6 +116,7 @@ class ModelConfig:
     extra_compile_flags: list[str] = field(default_factory=list)
     skip: str | None = None
     xfail: str | None = None
+    tier: str = "pr"
 
     @staticmethod
     def load(model_path: Path) -> "ModelConfig":
@@ -128,7 +131,12 @@ class ModelConfig:
             raw["int_range"] = tuple(raw["int_range"])
         if "float_range" in raw:
             raw["float_range"] = tuple(raw["float_range"])
-        return ModelConfig(**raw)
+        config = ModelConfig(**raw)
+        if config.tier not in ("pr", "slow"):
+            raise HarnessError(
+                f"{config_path}: tier must be 'pr' or 'slow', got '{config.tier}'"
+            )
+        return config
 
 
 @dataclass

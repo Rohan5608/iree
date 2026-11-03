@@ -97,6 +97,15 @@ def pytest_addoption(parser):
         "'128,256,512,1024'. Each model is compiled for (+zvl<N>b) and run on "
         "a QEMU CPU with exactly that VLEN (env: ONNX_VLENS).",
     )
+    g.addoption(
+        "--tier",
+        choices=["pr", "nightly", "stable"],
+        default=_env("ONNX_TIER", "pr"),
+        help="Test tier (env: ONNX_TIER). 'pr' skips models marked "
+        '"tier": "slow" in their sidecar; "nightly" runs all models; "stable" '
+        "runs all models and also runs models marked xfail, failing if one "
+        "now passes (a stale xfail) (env: ONNX_TIER).",
+    )
     g.addoption("--rtol", type=float, default=1e-4, help="Relative tolerance.")
     g.addoption("--atol", type=float, default=1e-5, help="Absolute tolerance.")
     g.addoption("--seed", type=int, default=0, help="Input generation seed.")
@@ -128,11 +137,17 @@ def pytest_generate_tests(metafunc):
         metafunc.parametrize("vlen", vlens, ids=[f"vlen{v}" for v in vlens])
     models_dir = Path(metafunc.config.getoption("models_dir")).resolve()
     models = sorted(models_dir.rglob("*.onnx"))
+    if metafunc.config.getoption("tier") == "pr":
+        models = [m for m in models if harness.ModelConfig.load(m).tier != "slow"]
     ids = [m.relative_to(models_dir).as_posix() for m in models]
     # An empty parametrization makes pytest skip the test, which would let a
     # misconfigured CI job pass silently. Fail loudly instead.
     if not models:
-        pytest.exit(f"No .onnx files found under {models_dir}", returncode=2)
+        pytest.exit(
+            f"No .onnx files to test under {models_dir} for tier "
+            f"'{metafunc.config.getoption('tier')}'",
+            returncode=2,
+        )
     metafunc.parametrize("model_path", models, ids=ids)
 
 

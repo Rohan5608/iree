@@ -38,14 +38,28 @@ name: RISC-V CI
 on:
   workflow_dispatch:
     inputs:
-      compiler_source:
-        description: Where the host compiler comes from
+      tier:
+        description: "Test tier (auto: pr, or nightly/stable by schedule/tag)"
         type: choice
         options:
+          - auto
+          - pr
+          - nightly
+          - stable
+        default: auto
+      compiler_source:
+        description: "Where the host compiler comes from (auto: by tier)"
+        type: choice
+        options:
+          - auto
           - nightly
           - stable
           - build
-        default: nightly
+        default: auto
+      compiler_version:
+        description: "Pin the nightly/stable wheels to this version, e.g. 3.13.0"
+        type: string
+        default: ""
       build_runner:
         description: Runner label for compiler_source=build
         type: string
@@ -55,10 +69,16 @@ on:
     branches:
       - main
       - "riscv/**"
+    tags:
+      - "riscv-stable-*"
+  schedule:
+    # Nightly tier. Scheduled workflows only run from the default branch.
+    - cron: "17 2 * * *"
 
 concurrency:
-  # Cancel superseded runs for the same PR or branch.
-  group: ${{ github.workflow }}-${{ github.event.number || github.ref }}
+  # Cancel superseded runs of the same kind for the same PR or branch. The
+  # event name keeps a push to main from cancelling a long nightly or stable run.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -68,28 +88,38 @@ jobs:
   config:
     runs-on: ubuntu-24.04
     outputs:
+      tier: ${{ steps.config.outputs.tier }}
       compiler-source: ${{ steps.config.outputs.compiler-source }}
+      compiler-version: ${{ steps.config.outputs.compiler-version }}
       build-runner: ${{ steps.config.outputs.build-runner }}
+      run-lint: ${{ steps.config.outputs.run-lint }}
     steps:
-      - name: Resolve options
+      - name: Checking out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Resolve tier and compiler source
         id: config
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TIER: ${{ inputs.tier }}
           INPUT_SOURCE: ${{ inputs.compiler_source }}
-          VAR_SOURCE: ${{ vars.RISCV_COMPILER_SOURCE }}
+          INPUT_VERSION: ${{ inputs.compiler_version }}
           INPUT_RUNNER: ${{ inputs.build_runner }}
+          VAR_SOURCE: ${{ vars.RISCV_COMPILER_SOURCE }}
           VAR_RUNNER: ${{ vars.RISCV_BUILD_RUNNER }}
+        run: ./build_tools/riscv/resolve_ci_config.sh
+      - name: Summarize
+        env:
+          TIER: ${{ steps.config.outputs.tier }}
+          SOURCE: ${{ steps.config.outputs.compiler-source }}
+          VERSION: ${{ steps.config.outputs.compiler-version }}
         run: |
-          source="${INPUT_SOURCE:-${VAR_SOURCE:-nightly}}"
-          runner="${INPUT_RUNNER:-${VAR_RUNNER:-ubuntu-24.04}}"
-          case "${source}" in
-            nightly|stable|build) ;;
-            *) echo "::error::Invalid compiler source '${source}'"; exit 1 ;;
-          esac
-          echo "compiler-source=${source}" >> "${GITHUB_OUTPUT}"
-          echo "build-runner=${runner}" >> "${GITHUB_OUTPUT}"
-          echo ":gear: Compiler source: \`${source}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo ":gear: Tier: \`${TIER}\`, compiler source: \`${SOURCE}\`${VERSION:+, pinned to \`${VERSION}\`}" >> "${GITHUB_STEP_SUMMARY}"
 
   lint:
+    needs: config
+    if: ${{ needs.config.outputs.run-lint == 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checking out repository
@@ -108,6 +138,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       COMPILER_SOURCE: ${{ needs.config.outputs.compiler-source }}
+      COMPILER_VERSION: ${{ needs.config.outputs.compiler-version }}
     steps:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -120,9 +151,18 @@ jobs:
           if [[ "${COMPILER_SOURCE}" == "nightly" ]]; then
             extra_args=(--pre --find-links https://iree.dev/pip-release-links.html)
           fi
+          packages=(iree-base-compiler iree-base-runtime)
+          if [[ -n "${COMPILER_VERSION}" ]]; then
+            packages=("iree-base-compiler==${COMPILER_VERSION}" "iree-base-runtime==${COMPILER_VERSION}")
+          fi
           python -m pip download --no-deps "${extra_args[@]}" \
-            iree-base-compiler iree-base-runtime --dest wheelhouse
+            "${packages[@]}" --dest wheelhouse
           ls -l wheelhouse
+          # Record exactly which compiler this run tested.
+          {
+            echo "Host compiler wheels:"
+            for wheel in wheelhouse/*.whl; do echo "- \`$(basename "${wheel}")\`"; done
+          } >> "${GITHUB_STEP_SUMMARY}"
       - name: Upload wheel artifacts
         # Same artifact name that upstream's PkgCI test workflows download.
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -141,7 +181,7 @@ jobs:
 
   riscv64_e2e:
     name: RISC-V 64 e2e
-    needs: [packages_pip, packages_build]
+    needs: [config, packages_pip, packages_build]
     # Run when whichever package job was selected succeeded (the other is
     # skipped).
     if: ${{ !cancelled() && !failure() }}
@@ -151,11 +191,12 @@ jobs:
 
   riscv64_onnx:
     name: RISC-V 64 ONNX
-    needs: [packages_pip, packages_build]
+    needs: [config, packages_pip, packages_build]
     if: ${{ !cancelled() && !failure() }}
     uses: ./.github/workflows/pkgci_test_riscv64_onnx.yml
     with:
       write-caches: "1"
+      tier: ${{ needs.config.outputs.tier }}
 
   summary:
     # Use this job as the required status check in branch protection.

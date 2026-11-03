@@ -65,6 +65,7 @@ Useful options (flag or environment variable; see `conftest.py`):
 | `--models-dir` | `ONNX_MODELS_DIR` | Use another directory of models |
 | `--work-dir` | `ONNX_WORK_DIR` | Keep MLIR/vmfb/npy intermediates |
 | `--vlens` | `ONNX_VLENS` | Comma-separated VLENs in bits, e.g. `128,256,512,1024` |
+| `--tier` | `ONNX_TIER` | `pr` (default), `nightly` or `stable` |
 | `--rtol`, `--atol`, `--seed` | | Tolerances / input seed |
 | `--extra-compile-flags` | `IREE_EXTRA_COMPILE_FLAGS` | Append `iree-compile` flags |
 | `--override-compile-flags` | `IREE_OVERRIDE_COMPILE_FLAGS` | Replace the riscv64+RVV flag set (e.g. another VLEN; also change `--qemu-cpu`) |
@@ -86,13 +87,18 @@ An optional `<model>.onnx.json` next to the model (all keys optional):
   "float_range": [-1.0, 1.0],
   "extra_compile_flags": ["--iree-opt-level=O3"],
   "skip": "reason, to skip the model",
-  "xfail": "reason, to mark a known failure"
+  "xfail": "reason, to mark a known failure",
+  "tier": "slow"
 }
 ```
 
 * `input_dims` assigns sizes to symbolic/dynamic input dimensions (default 1).
 * `int_range` bounds generated integer inputs (e.g. token ids or gather
   indices); the default is `[0, 4)`.
+* `tier` is `pr` (default) or `slow`. `slow` models are skipped by `--tier pr`
+  and run in the `nightly` and `stable` tiers (`--tier` / `ONNX_TIER`).
+  In the `stable` tier a model marked `xfail` is run anyway and the test fails
+  if it now passes, so stale entries get removed.
 * The `skip` and `xfail` keys are the way to quarantine a model that is known
   not to work yet, without deleting it.
 

@@ -56,10 +56,12 @@ Two independent suites:
 | `tests/riscv64_onnx/riscv_onnx_harness.py` | The engine: inputs, ONNX Runtime run, import, compile, QEMU run, comparison, `with_vlen`. |
 | `tests/riscv64_onnx/test_onnx_models.py` | One pytest test per model and VLEN. |
 | `tests/riscv64_onnx/conftest.py` | Model discovery, options (`--vlens`, tolerances, tool paths). |
-| `tests/riscv64_onnx/models/` | The test cases. `<model>.onnx.json` optionally holds per-model settings (`rtol`, `atol`, `input_dims`, `int_range`, `extra_compile_flags`, `skip`, `xfail`). |
+| `tests/riscv64_onnx/models/` | The test cases. `<model>.onnx.json` optionally holds per-model settings (`rtol`, `atol`, `input_dims`, `int_range`, `extra_compile_flags`, `skip`, `xfail`, `tier`). `models/slow/` holds the sample `slow`-tier model (external weights file). |
+| `tests/riscv64_onnx/test_ci_config.py` | Unit tests for the tier / compiler-source decision. |
 | `tests/riscv64_onnx/requirements.txt`, `README.md` | Python dependencies and usage. |
 | `build_tools/riscv/build_run_module.sh` | Cross-builds only the riscv64 `iree-run-module`. |
 | `build_tools/riscv/run_onnx_tests.sh` | Runs the ONNX suite (used by CI and locally). |
+| `build_tools/riscv/resolve_ci_config.sh` | Decides the tier (pr / nightly / stable) and the host-compiler source for `riscv64_ci.yml`. Tested by `tests/riscv64_onnx/test_ci_config.py`. |
 | `build_tools/riscv/build_host_compiler.sh` | Builds `iree-compile` & helpers from the checkout (for compiler changes). |
 | `build_tools/riscv/list_e2e_tests.sh` | Lists the upstream e2e/runtime tests that run on riscv64. |
 | `build_tools/riscv/local_ci.sh` | Local wrapper: `lint`, `build`, `onnx`, `e2e`, `all`. **Not used by GitHub CI.** |
@@ -97,99 +99,115 @@ are copied, with a comment).
 |---|---|
 | Add a model | Add `tests/riscv64_onnx/models/<name>.onnx` (+ weights file beside it, + optional `.onnx.json`). |
 | Quarantine a failing model | `"xfail"` or `"skip"` in its `.onnx.json`. |
+| Make a model nightly/stable-only (big or slow) | `"tier": "slow"` in its `.onnx.json`. |
+| Pin the compiler for a stable run | Run input `compiler_version` (e.g. `3.13.0`). |
+| Change the nightly time | The `cron` line in `riscv64_ci.yml`. |
 | Change the vector widths in CI | Repo variable `RISCV_ONNX_VLENS` (default `128,256,512,1024`). |
 | Change the compiler source | Run input `compiler_source`, or repo variable `RISCV_COMPILER_SOURCE`. |
 | Change RVV compile flags | `DEFAULT_COMPILE_FLAGS` in the harness **and** `linux_riscv64.cmake` (keep equal). |
 | Change the RISC-V toolchain/QEMU version | The `Bootstrap` step in `pkgci_test_riscv64.yml` and `pkgci_test_riscv64_onnx.yml`. |
 | Change which upstream tests are excluded | `test_riscv.sh` **and** `LABEL_EXCLUDE` in `list_e2e_tests.sh`. |
 
-## 4. Three meanings of "nightly" and two of "stable"
+## 4. What "nightly" and "stable" mean here
 
-These words are used for different things. Keep them apart.
+The words are used for different things. Keep them apart.
 
 | Term | What it is | Who runs it |
 |---|---|---|
-| **Upstream nightly release** | iree-org's scheduled job (05:00 UTC) tags the latest green `main` commit with an `rc` version, creates a draft prerelease and builds wheels (`schedule_candidate_release.yml`, then `build_package.yml`). Published wheels are listed at `iree.dev/pip-release-links.html`. | iree-org. Does **not** run on the fork. |
-| **`compiler_source=nightly`** | *Our* CI downloads those upstream nightly wheels as the host compiler. A way to get a compiler, not a test schedule. | Implemented, the default. |
-| **Fork nightly run** | A scheduled run of *our* test matrix. | **Proposed, not implemented.** |
-| **Upstream stable release** | A release cut manually (`oneshot_candidate_release.yml` with `stable`), validated and published by `validate_and_publish_release.yml`. Latest is what PyPI serves. | iree-org. |
-| **`compiler_source=stable`** | Our CI installs the latest PyPI stable wheels as the host compiler. | Implemented. |
-| **Fork stable gate** | A release-quality run of our full matrix against a pinned compiler. | **Proposed, not implemented.** |
+| **Upstream nightly release** | iree-org's scheduled job (05:00 UTC) tags the latest green `main` commit with an `rc` version, creates a draft prerelease and builds wheels. It *produces release artifacts*. | iree-org. Does **not** run on the fork. |
+| **Upstream stable release** | A release cut manually and published; what PyPI serves. | iree-org. |
+| **`compiler_source=nightly` / `stable`** | Our CI downloads those upstream wheels to use as the host compiler. A way to obtain a compiler, not a test schedule. | Implemented. |
+| **Fork nightly run** (tier `nightly`) | A *scheduled test run* of our own matrix on our branch. It tests; it **publishes nothing** and creates no release or tag. | Implemented. |
+| **Fork stable run** (tier `stable`) | A strict, reproducible run of the full matrix against a pinned compiler, started by a tag or by hand. It also publishes nothing; its result is the record that a state was good. | Implemented. |
 
-Important facts about upstream's pipeline (read from the workflows):
+Facts about upstream's pipeline (read from the workflows): releases are cut
+from a commit where upstream's `ci.yml` passed (x86/arm/etc.), and release
+validation only smoke-tests the packages (`--help`, `iree-cpuinfo`). It runs
+**no** e2e, runtime or RISC-V tests. An upstream nightly or stable wheel is
+therefore **not** known to be good for RISC-V; our tiers are what establish
+that.
 
-- Nightly/stable releases are cut from a commit where upstream's `ci.yml` passed
-  (`get_latest_green.sh`). That is x86/arm/etc. CI, not RISC-V.
-- Upstream release validation only smoke-tests the packages (`--help` on the
-  tools, `iree-cpuinfo`, and so on). It runs **no** e2e, runtime or RISC-V
-  tests. So an upstream nightly or stable wheel is **not** known to be good for
-  RISC-V.
+## 5. The tiers (implemented)
 
-## 5. What runs today (implemented)
+`riscv64_ci.yml` picks a tier with `resolve_ci_config.sh`:
 
-`riscv64_ci.yml` runs on **pull requests** (any base branch), on **pushes to
-`main` and `riscv/**`**, and on **manual dispatch**. It has no schedule. All
-triggers run the same jobs:
+- an explicit `tier` input (manual run) wins;
+- otherwise a **scheduled** run is `nightly`;
+- otherwise a pushed tag named `riscv-stable-*` is `stable`;
+- everything else (pull requests, pushes to `main` / `riscv/**`) is `pr`.
 
-| Job | Tests involved |
+| | `pr` | `nightly` | `stable` |
+|---|---|---|---|
+| Trigger | PR, push to `main`/`riscv/**`, manual | cron 02:17 UTC daily, manual | tag `riscv-stable-*`, manual |
+| Purpose | Fast feedback on every change | Test the branch's own compiler across everything | A reproducible, strict pass for a chosen state |
+| Host compiler (default) | `nightly` wheels (or repo variable `RISCV_COMPILER_SOURCE`) | **built from the branch** | **`stable` wheels**, pin with `compiler_version` |
+| Lint | yes | no | yes |
+| Upstream e2e + runtime tests | yes, VLEN 512 | yes, VLEN 512 | yes, VLEN 512 |
+| ONNX models | models of tier `pr` (not `slow`) | **all** models, including `slow` | **all** models, including `slow` |
+| ONNX vector widths | `RISCV_ONNX_VLENS` (default 128,256,512,1024) | same | same |
+| A model marked `xfail` | skipped (not run) | skipped (not run) | **run**; if it now passes the run **fails** ("stale xfail") |
+| Test report artifact | only on failure | always | always |
+| Records | | compiler wheel names (if wheels) | compiler wheel names and pinned version |
+
+Any default can be overridden on a manual run (`tier`, `compiler_source`,
+`compiler_version`, `build_runner`).
+
+### What a fork nightly run actually is
+
+A cron-triggered run of the same workflow with `tier=nightly`. It is **not** a
+release: nothing is tagged, uploaded to an index or published. Compared with a
+PR run it differs in three ways:
+
+1. **It tests our compiler.** PR runs use upstream's nightly wheel, so compiler
+   changes on the branch are not exercised. The nightly run builds the compiler
+   from the branch (hours on a cold cache; cached afterwards), so it is the one
+   run that tests our compiler changes against the full suite.
+2. **It runs more models.** The `slow` models (large or slow to emulate) are
+   skipped on PRs and included here.
+3. **It does not re-lint**; lint is a PR concern.
+
+The first nightly run builds LLVM from scratch and may need a larger runner
+(`RISCV_BUILD_RUNNER`). GitHub only runs schedules from the **default branch**
+and may disable them in inactive repositories, so merge `riscv64_ci.yml`
+there and check the Actions tab after the first night.
+
+### The stable tier
+
+Goal: a result that can be reproduced. It differs from nightly in:
+
+- the compiler is a **pinned upstream stable release** (`compiler_version`; the
+  exact wheel names are written to the run summary). Without a pin it takes the
+  latest PyPI release and records which one;
+- a `xfail` model is **run**, and a model that now passes fails the run, so
+  the known-failure list cannot rot;
+- lint runs.
+
+To test a tag of your own compiler instead, start the run with
+`compiler_source=build`.
+
+### e2e suite vs ONNX suite across tiers
+
+These are two different test sets (section 2). Across tiers:
+
+- **The upstream e2e + runtime tests are identical in every tier**: the same
+  384 enabled e2e and 264 runtime tests at VLEN 512. What changes is *which
+  compiler compiles them*: upstream's wheel in `pr`, our branch build in
+  `nightly`, a pinned release in `stable`.
+- **The ONNX suite changes in the set of models** (`slow` ones only in
+  nightly/stable), and in how `xfail` is treated (stable only). Its vector
+  widths are the same in all tiers.
+
+## 6. Not implemented
+
+| Item | What it needs |
 |---|---|
-| `lint` | pre-commit on all files (black, clang-format, typos, YAML, whitespace, bazel_to_cmake, ...). |
-| `packages_pip` / `packages_build` | Provide the host compiler: `nightly` (default) or `stable` wheels, or built from the branch (`build`). |
-| `riscv64_e2e` | Upstream suite via `pkgci_test_riscv64.yml`: runtime unit tests (264 listed locally) and e2e tests (384 enabled of 447, VLEN 512), plus the bare-metal smoke test. Counts come from `list_e2e_tests.sh` and may differ in CI. |
-| `riscv64_onnx` | Every model in `tests/riscv64_onnx/models`, at each width in `ONNX_VLENS` (CI default 128,256,512,1024). |
-| `summary` | Aggregates results; make this the required check. |
+| Publishing or releasing anything from the fork | A decision on what to publish and where. |
+| A canary: also run the nightly-wheel compiler during the nightly tier, and report the difference | A second package job (the artifact name must differ), plus a report. |
+| Extra vector widths for the upstream e2e suite | Make the width a CMake variable in `linux_riscv64.cmake` (an upstream file), exclude the nine RVV matmul tests that hard-code `+zvl512b` at other widths, one cross-build per width. |
+| Regression report against the previous night | Store JUnit results and diff them. |
+| Per-model time budgets | A time limit per tier in the sidecar. |
 
-Consequences of the defaults:
-
-- The host compiler is **upstream's nightly wheel**, so a PR's compiler changes
-  are **not** exercised unless `compiler_source=build`.
-- The runtime (`iree-run-module`, runtime unit tests) **is** built from the PR
-  branch in every mode.
-- Models that fail import/compile/compare fail the run. There is no tiering:
-  every model runs on every PR.
-
-## 6. Proposed tiers (not implemented)
-
-The idea: cheap, always-on checks on PRs; heavier checks on a schedule; and a
-strict pinned run before declaring a state "stable". The same test cases are
-used throughout; the tiers differ in **compiler**, **vector widths**, **model
-set** and **schedule**.
-
-| | PR / push (today) | Post-merge on `main` (proposed) | Nightly (proposed) | Stable gate (proposed) |
-|---|---|---|---|---|
-| Trigger | PR, push to `main`/`riscv/**` | push to `main` | cron + manual | manual or tag |
-| Host compiler | `nightly` wheels | `build` from `main` | `build` from `main`, plus a `nightly`-wheel canary | **pinned** `stable` wheels, and/or `build` at the tag |
-| Lint | yes | yes | no | yes |
-| Upstream e2e + runtime tests | yes, VLEN 512 | yes | yes; add one extra width (e.g. 256) once the CMake change in 7 is done | yes, same as nightly |
-| ONNX models | all, VLEN 128–1024 | all, VLEN 128–1024 | all **plus** slow/large models (tier `slow`), VLEN 128–1024 | all incl. `slow`, VLEN 128–1024 |
-| Allowed failures | none | none | `xfail` models only | none; stale `xfail` entries must be reviewed |
-| Output | status check | warms the compiler cache | status + report of regressions vs previous night | recorded compiler/runtime versions and a pass table |
-
-Rationale:
-
-- **Why `build` post-merge/nightly, not on every PR:** a cold compiler build
-  takes hours on a 4-core runner. After one run on `main` the cache makes
-  later runs cheap, and PRs can reuse the `main` cache.
-- **Why a `nightly`-wheel canary:** it tells you whether *upstream's* latest
-  compiler still works for RISC-V, independent of your branch.
-- **Why pin `stable`:** a stable result must be reproducible. Floating at
-  "latest" would let the result change without any change in the repo.
-- **Do tiers change the test cases?** The test *sources* are the same. Only the
-  `slow` model set and the extra vector width are additions that need a small
-  amount of new code (see 7).
-
-## 7. Work needed to implement section 6
-
-| Item | What to change | Effort |
-|---|---|---|
-| Schedule + `schedule`/`push` triggers | `riscv64_ci.yml`: add `on: schedule` and a `tier` input; pass it to jobs. | Small |
-| Model tiers | Add a `"tier": "slow"` key to the sidecar schema; `--tier` option in `conftest.py`. | Small |
-| Pinned stable compiler | `compiler_source=stable` takes a version input (`iree-base-compiler==X`) instead of "latest". | Small |
-| Compiler canary | A second `packages_pip` run with nightly wheels, differential report. | Medium |
-| Extra vector width for the e2e suite | Make the width a CMake variable in `linux_riscv64.cmake`; exclude the nine RVV matmul tests that hard-code `+zvl512b` at other widths; one cross-build per width. | Medium; touches an upstream file |
-| Regression report | Store per-test results (JUnit is already produced) and diff against the previous run. | Medium |
-
-## 8. Verification status
+## 7. Verification status
 
 Verified locally (x86 Linux container, Ubuntu clang cross toolchain, QEMU
 8.2.2): the ONNX suite at widths 128, 256, 512, 1024 on both sample models;
@@ -198,14 +216,24 @@ corrupt model, strict tolerances, width mismatch); the pre-commit and pre-push
 hooks; configure of the host-compiler build and the helper tools; the
 listing of riscv64 e2e tests.
 
+Also verified locally: model tiers (`pr` excludes `slow`; `nightly`/`stable`
+include it), the stable-tier stale-xfail rule (a passing model marked xfail
+fails; a broken one is tolerated), and the tier/compiler-source decision
+(17 unit tests in `test_ci_config.py`, including that PR and push behaviour is
+unchanged).
+
 Verified on GitHub: one run of `RISC-V CI` (lint, nightly wheels, e2e suite,
 ONNX suite at the then-default width, bare-metal smoke test, summary) passed.
-That run predates the multi-width matrix.
+That run predates the multi-width matrix and the tiers.
 
 **Not verified:**
 
-- The multi-width matrix in GitHub CI (QEMU there is 8.1.2; widths above 1024
-  may not be supported by it).
+- The multi-width matrix and the tier logic in GitHub CI (QEMU there is
+  8.1.2; widths above 1024 may not be supported by it). The workflow passes
+  `actionlint`, but the schedule, the tag trigger and the `workflow_dispatch`
+  inputs have not run on GitHub.
+- The nightly tier end to end: it needs `compiler_source=build`, which was not
+  run, and the schedule only fires from the default branch.
 - `compiler_source=build` end to end (hours; not run). `iree-compile` itself
   was not built by `build_host_compiler.sh`; only the configure and the
   helper tools were.
@@ -213,7 +241,7 @@ That run predates the multi-width matrix.
 - The `disable_upstream_workflows.sh` script (needs the GitHub CLI).
 - Large models: only models up to a few hundred KB were tested.
 
-## 9. Limitations
+## 8. Limitations
 
 - Correctness only; QEMU speed says nothing about real hardware.
 - A compiler built for a larger VLEN than the CPU provides runs silently and
@@ -225,14 +253,14 @@ That run predates the multi-width matrix.
 - Models import with weights embedded in the MLIR; multi-GB models are not
   practical until the importer's external-parameter option is used.
 
-## Open decisions
+## Defaults chosen (change if wrong)
 
-1. **Do you publish anything** (wheels, releases) from the fork, or is
-   "stable" only a gate on a tested state? Section 6 assumes the latter.
-2. **Which compiler does "stable" mean:** a pinned upstream stable release, or
-   your own branch at a tag? Or both?
-3. **Nightly schedule and runner size:** time, and whether a larger runner is
-   available for `build`.
-4. **Which models are `slow`**, and what is the largest model you need.
-5. **Should the e2e suite also run at more than one vector width?** (needs
-   the CMake change in section 7).
+These were decided without input; each is one line to change.
+
+1. **No publishing.** "Stable" and "nightly" are test runs only.
+2. **Stable = pinned upstream stable wheels** (or `build` at a tag when asked).
+3. **Nightly time 02:17 UTC**, compiler built on `ubuntu-24.04` unless
+   `RISCV_BUILD_RUNNER` is set.
+4. **"Slow" is chosen per model** with `"tier": "slow"`; nothing is marked slow
+   except the sample external-weights model.
+5. **The e2e suite stays at VLEN 512** in every tier (section 6).

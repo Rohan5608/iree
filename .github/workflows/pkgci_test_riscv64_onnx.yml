@@ -20,6 +20,10 @@ on:
       write-caches:
         required: true
         type: string
+      tier:
+        description: "pr, nightly or stable (see build_tools/riscv/STRATEGY.md)"
+        type: string
+        default: "pr"
   workflow_dispatch:
     inputs:
       artifact_run_id:
@@ -28,6 +32,10 @@ on:
       write-caches:
         required: true
         type: string
+      tier:
+        description: "pr, nightly or stable (see build_tools/riscv/STRATEGY.md)"
+        type: string
+        default: "pr"
 
 permissions:
   contents: read
@@ -108,14 +116,18 @@ jobs:
           # Vector register widths (bits) to test. Override for all runs with
           # the repository variable RISCV_ONNX_VLENS.
           ONNX_VLENS: ${{ vars.RISCV_ONNX_VLENS || '128,256,512,1024' }}
+          # pr: skip models marked "tier": "slow". nightly: all models.
+          # stable: all models, and a model marked xfail that passes fails.
+          ONNX_TIER: ${{ inputs.tier }}
         run: |
           source ${VENV_DIR}/bin/activate
           ./build_tools/riscv/run_onnx_tests.sh
       - name: Upload intermediates and report
-        if: ${{ failure() }}
+        # Always keep the report for nightly/stable runs; on PRs only failures.
+        if: ${{ failure() || (!cancelled() && inputs.tier != 'pr') }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: riscv64_onnx_failures
+          name: riscv64_onnx_report_${{ inputs.tier }}
           path: |
             build-riscv/onnx_junit.xml
             build-riscv/onnx_work
