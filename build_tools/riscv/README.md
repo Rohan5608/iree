@@ -22,9 +22,15 @@ Everything starts in `.github/workflows/ci.yml` and `pkgci.yml` (plus
 `lint.yml`, `clang_tidy.yml`). Each begins with `setup.yml`, which runs
 `build_tools/github_actions/configure_ci.py` to decide **which jobs run**:
 
-* All jobs of the workflow, minus the schedule-only and postsubmit-only ones.
-* Plus jobs whose files changed (`PRESUBMIT_TOUCH_ONLY_JOBS`, e.g. only touch
-  `tests/external/iree-test-suites/torch*` and `test_torch` runs).
+* All jobs of the workflow, minus the schedule-only (`DEFAULT_SCHEDULE_ONLY_JOBS`:
+  macos, arm64, gcc, tsan, byollvm) and postsubmit-only (`linux_x64_clang_debug`)
+  ones. So a normal PR runs every other job, e.g. for `ci.yml`: `runtime*`,
+  `linux_x64_clang`, `linux_x64_clang_ubsan`, `linux_x64_clang_asan`,
+  `linux_x64_bazel`, `linux_x64_clang_dynamic_plugins`, `windows_x64_msvc`.
+* Plus jobs whose files changed (`PRESUBMIT_TOUCH_ONLY_JOBS`). This list only
+  changes anything for jobs that are otherwise excluded above: e.g. the arm64
+  job runs on a PR that edits `ci_linux_arm64_clang.yml`. For jobs already on by
+  default (such as `windows_x64_msvc`) its entries are redundant.
 * Everything is skipped if only docs/markdown/etc. changed
   (`SKIP_PATH_PATTERNS`).
 * PR-description trailers override this: `skip-ci:`, `ci-skip: job1,job2`,
