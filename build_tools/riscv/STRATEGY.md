@@ -63,6 +63,8 @@ Two independent suites:
 | `build_tools/riscv/run_onnx_tests.sh` | Runs the ONNX suite (used by CI and locally). |
 | `build_tools/riscv/resolve_ci_config.sh` | Decides the tier (pr / nightly / stable) and the host-compiler source for `riscv64_ci.yml`. Tested by `tests/riscv64_onnx/test_ci_config.py`. |
 | `build_tools/riscv/build_host_compiler.sh` | Builds `iree-compile` & helpers from the checkout (for compiler changes). |
+| `build_tools/riscv/run_suite.sh` | Runs one test suite by name (`lit`, `runtime`, `e2e`, `onnx`) with filters, listing and build helpers. |
+| `build_tools/riscv/riscv_test_filters.sh` | The riscv64 CTest exclusion lists, shared by `run_suite.sh` and `list_e2e_tests.sh`. |
 | `build_tools/riscv/list_e2e_tests.sh` | Lists the upstream e2e/runtime tests that run on riscv64. |
 | `build_tools/riscv/local_ci.sh` | Local wrapper: `lint`, `build`, `onnx`, `e2e`, `all`. **Not used by GitHub CI.** |
 | `build_tools/riscv/setup_dev.sh` | One-time developer setup (venv, hooks, submodules). |
@@ -106,7 +108,7 @@ are copied, with a comment).
 | Change the compiler source | Run input `compiler_source`, or repo variable `RISCV_COMPILER_SOURCE`. |
 | Change RVV compile flags | `DEFAULT_COMPILE_FLAGS` in the harness **and** `linux_riscv64.cmake` (keep equal). |
 | Change the RISC-V toolchain/QEMU version | The `Bootstrap` step in `pkgci_test_riscv64.yml` and `pkgci_test_riscv64_onnx.yml`. |
-| Change which upstream tests are excluded | `test_riscv.sh` **and** `LABEL_EXCLUDE` in `list_e2e_tests.sh`. |
+| Change which upstream tests are excluded | `test_riscv.sh` **and** `riscv_test_filters.sh`. |
 
 ## 4. What "nightly" and "stable" mean here
 

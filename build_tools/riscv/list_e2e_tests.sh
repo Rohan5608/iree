@@ -28,7 +28,8 @@
 #   IREE_HOST_BIN_DIR     Directory with iree-flatcc-cli, iree-c-embed-data
 #                         (default build/install/bin, e.g. use .venv/bin).
 #
-# The exclusions below must be kept in sync with test_riscv.sh. A test listed
+# The exclusions come from riscv_test_filters.sh (keep in sync with
+# test_riscv.sh). A test listed
 # as "(Disabled)" is registered but never runs.
 
 set -euo pipefail
@@ -52,9 +53,10 @@ BUILD_DIR="${BUILD_DIR:-build-riscv-list}"
 
 cd "$(git rev-parse --show-toplevel)"
 
-# Keep in sync with build_tools/cmake/test_riscv.sh.
-LABEL_EXCLUDE='^(nodocker|driver=vulkan|driver=metal|driver=cuda|driver=hip|vulkan_uses_vk_khr_shader_float16_int8|requires-filesystem|requires-dtz|noriscv)$'
-NAME_EXCLUDE='regression_llvm-cpu_lowering_config'
+# Shared with run_suite.sh; keep in sync with build_tools/cmake/test_riscv.sh.
+source "$(dirname "${BASH_SOURCE[0]}")/riscv_test_filters.sh"
+LABEL_EXCLUDE="${RISCV_LABEL_EXCLUDE}"
+NAME_EXCLUDE="${RISCV_NAME_EXCLUDE}"
 
 if [[ -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
   if grep -q "^IREE_BUILD_TESTS:BOOL=OFF" "${BUILD_DIR}/CMakeCache.txt"; then
