@@ -1,0 +1,7 @@
+{
+  "static": true,
+  "input_script": "input.py",
+  "run_on": ["pr", "nightly", "release"],
+  "rtol": 0.0001,
+  "atol": 0.00001
+}

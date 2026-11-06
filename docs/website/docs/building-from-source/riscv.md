@@ -8,6 +8,10 @@ icon: octicons/cpu-16
 
 # RISC-V cross-compilation
 
+For a standalone GitHub Actions pipeline that builds on a Linux host, tests
+RVV-enabled models under QEMU, and uploads validated artifacts, see
+[Linux host CI for RISC-V Linux with RVV](../developers/building/riscv64-ci.md).
+
 Running on a platform like RISC-V involves cross-compiling from a _host_
 platform (e.g. Linux) to a _target_ platform (a specific RISC-V CPU architecture
 and operating system):

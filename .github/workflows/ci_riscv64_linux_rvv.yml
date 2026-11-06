@@ -1,0 +1,105 @@
+# Copyright 2026 The IREE Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+name: Source CI - RISC-V Linux RVV
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 2 * * *'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      onnx_vlen:
+        description: ONNX VLEN in bits (model uses each manifest, default 1024)
+        type: choice
+        options: [model, '128', '256', '512', '1024']
+        default: model
+      onnx_suite:
+        description: ONNX model selection (all explicitly includes restricted cases)
+        type: choice
+        options: [pr, nightly, release, all]
+        default: pr
+      profile:
+        description: Test coverage (standard includes compiler lit and core e2e)
+        type: choice
+        options: [standard, smoke]
+        default: standard
+
+permissions:
+  contents: read
+
+concurrency:
+  group: riscv64-rvv-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-rvv:
+    if: ${{ github.event_name != 'release' || !github.event.release.prerelease }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 2
+      IREE_RISCV_TEST_PROFILE: ${{ inputs.profile || 'standard' }}
+      IREE_ONNX_SUITE: ${{ inputs.onnx_suite || (github.event_name == 'schedule' && 'nightly') || (github.event_name == 'release' && 'release') || 'pr' }}
+      IREE_ONNX_VLEN: ${{ (inputs.onnx_vlen != 'model' && inputs.onnx_vlen) || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - name: Install host prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld ninja-build curl ca-certificates python3-venv
+          python3 -m venv "$RUNNER_TEMP/riscv-ci-venv"
+          "$RUNNER_TEMP/riscv-ci-venv/bin/python" -m pip install cmake==3.31.6 packaging \
+            -r build_tools/riscv/onnx_requirements.txt \
+            -r runtime/bindings/python/iree/runtime/build_requirements.txt
+          echo "$RUNNER_TEMP/riscv-ci-venv/bin" >> "$GITHUB_PATH"
+      - name: Test ONNX comparison and input validation
+        run: python -m pytest -q build_tools/riscv/onnx_compare_test.py
+      - name: Bootstrap verified cross-toolchain and QEMU
+        run: bash build_tools/riscv/ci_rvv.sh bootstrap
+      - name: Build host compiler from this commit
+        run: bash build_tools/riscv/ci_rvv.sh host
+      - name: Run host compiler lit tests
+        if: ${{ env.IREE_RISCV_TEST_PROFILE == 'standard' }}
+        run: bash build_tools/riscv/ci_rvv.sh lit
+      - name: Cross-compile runtime and tests
+        run: bash build_tools/riscv/ci_rvv.sh runtime
+      - name: Run runtime tests under QEMU
+        run: bash build_tools/riscv/ci_rvv.sh test
+      - name: Compile and execute RVV model on both CPU drivers
+        run: bash build_tools/riscv/ci_rvv.sh e2e
+      - name: Compare discovered ONNX models with ONNX Runtime under QEMU
+        run: bash build_tools/riscv/ci_rvv.sh onnx
+      - name: Package validated artifacts
+        run: bash build_tools/riscv/ci_rvv.sh package
+      - name: Upload validated artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: riscv64-linux-rvv-${{ github.sha }}
+          path: build-riscv-ci/artifacts/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload diagnostic reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: riscv64-linux-rvv-diagnostics-${{ github.run_attempt }}
+          path: |
+            build-riscv-ci/runtime-tests.xml
+            build-riscv-ci/compiler-lit.xml
+            build-riscv-ci/core-e2e.xml
+            build-riscv-ci/onnx/
+            build-riscv-ci/host/compiler/Testing/Temporary/
+            build-riscv-ci/host/CMakeFiles/CMakeConfigureLog.yaml
+            build-riscv-ci/target/CMakeFiles/CMakeConfigureLog.yaml
+            build-riscv-ci/target/Testing/Temporary/
+          if-no-files-found: ignore
+          retention-days: 7

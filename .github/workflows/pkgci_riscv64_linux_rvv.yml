@@ -1,0 +1,145 @@
+# Copyright 2026 The IREE Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+name: Package CI - RISC-V Linux RVV
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 3 * * *'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      onnx_vlen:
+        description: ONNX VLEN in bits (model uses each manifest, default 1024)
+        type: choice
+        options: [model, '128', '256', '512', '1024']
+        default: model
+      onnx_suite:
+        description: ONNX model selection (all explicitly includes restricted cases)
+        type: choice
+        options: [pr, nightly, release, all]
+        default: pr
+      profile:
+        description: Target test coverage
+        type: choice
+        options: [standard, smoke]
+        default: standard
+
+permissions:
+  contents: read
+
+concurrency:
+  group: riscv64-package-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-packages:
+    if: ${{ github.event_name != 'release' || !github.event.release.prerelease }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      CC: clang
+      CXX: clang++
+      CMAKE_BUILD_PARALLEL_LEVEL: 2
+      IREE_ENABLE_LLD: ON
+      IREE_COMPILER_API_CMAKE_BUILD_DIR: ${{ github.workspace }}/build-package-ci/compiler
+      IREE_RUNTIME_API_CMAKE_BUILD_DIR: ${{ github.workspace }}/build-package-ci/runtime
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Install wheel build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld ninja-build
+          python -m pip install cmake==3.31.6 packaging \
+            -r runtime/bindings/python/iree/runtime/build_requirements.txt
+      - name: Build host compiler and runtime wheels from this commit
+        run: |
+          python -m pip wheel --no-deps --no-build-isolation --wheel-dir wheelhouse ./compiler
+          python -m pip wheel --no-deps --no-build-isolation --wheel-dir wheelhouse ./runtime
+          git rev-parse HEAD > wheelhouse/commit.txt
+          (cd wheelhouse && sha256sum ./*.whl commit.txt > SHA256SUMS)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: riscv-ci-host-wheels
+          path: wheelhouse/
+          if-no-files-found: error
+          retention-days: 14
+
+  test-packages:
+    needs: build-packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 2
+      IREE_RISCV_TEST_PROFILE: ${{ inputs.profile || 'standard' }}
+      IREE_ONNX_SUITE: ${{ inputs.onnx_suite || (github.event_name == 'schedule' && 'nightly') || (github.event_name == 'release' && 'release') || 'pr' }}
+      IREE_ONNX_VLEN: ${{ (inputs.onnx_vlen != 'model' && inputs.onnx_vlen) || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: riscv-ci-host-wheels
+          path: wheelhouse/
+      - name: Install and verify the freshly built wheels
+        run: |
+          (cd wheelhouse && sha256sum --check SHA256SUMS)
+          test "$(cat wheelhouse/commit.txt)" = "$(git rev-parse HEAD)"
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+          python -m venv "$RUNNER_TEMP/iree-package-test"
+          "$RUNNER_TEMP/iree-package-test/bin/python" -m pip install cmake==3.31.6 \
+            -r build_tools/riscv/onnx_requirements.txt wheelhouse/*.whl
+          echo "$RUNNER_TEMP/iree-package-test/bin" >> "$GITHUB_PATH"
+          echo "IREE_HOST_BIN_DIR=$RUNNER_TEMP/iree-package-test/bin" >> "$GITHUB_ENV"
+      - name: Test ONNX comparison and input validation
+        run: python -m pytest -q build_tools/riscv/onnx_compare_test.py
+      - name: Check installed host packages
+        run: |
+          python -m iree.compiler._package_test
+          python -m iree.runtime._package_test
+          iree-compile --version
+      - name: Bootstrap verified RISC-V tools
+        run: bash build_tools/riscv/ci_rvv.sh bootstrap
+      - name: Cross-build with the installed compiler package
+        run: bash build_tools/riscv/ci_rvv.sh runtime
+      - name: Run target runtime and configured core e2e tests
+        run: bash build_tools/riscv/ci_rvv.sh test
+      - name: Run custom RVV model using the installed compiler
+        run: bash build_tools/riscv/ci_rvv.sh e2e
+      - name: Compare discovered ONNX models with ONNX Runtime under QEMU
+        run: bash build_tools/riscv/ci_rvv.sh onnx
+      - name: Assemble validated target outputs
+        run: bash build_tools/riscv/ci_rvv.sh package
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-tested-riscv64-rvv-${{ github.sha }}
+          path: build-riscv-ci/artifacts/
+          if-no-files-found: error
+      - name: Upload target test diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-riscv64-diagnostics-${{ github.run_attempt }}
+          path: |
+            build-riscv-ci/*.xml
+            build-riscv-ci/onnx/
+            build-riscv-ci/target/CMakeFiles/CMakeConfigureLog.yaml
+            build-riscv-ci/target/Testing/Temporary/
+          if-no-files-found: ignore

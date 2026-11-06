@@ -1,0 +1,7 @@
+{
+  "static": true,
+  "run_on": ["nightly", "release"],
+  "seed": 123,
+  "rtol": 0.0001,
+  "atol": 0.00001
+}
