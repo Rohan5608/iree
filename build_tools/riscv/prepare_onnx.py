@@ -10,16 +10,24 @@ from pathlib import Path
 import numpy as np
 import onnx
 
-from onnx_compare import case_config, case_inputs
+from onnx_case import case_config, case_inputs
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", type=Path, required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--model", type=Path)
+    source.add_argument("--model-dir", type=Path, help="Case directory containing exactly one ONNX file")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--timeout", type=int, default=300)
     args = parser.parse_args()
-    model_path = args.model.resolve()
+    if args.model_dir is not None:
+        models = sorted(args.model_dir.glob("*.onnx"))
+        if len(models) != 1:
+            parser.error("--model-dir must contain exactly one .onnx file")
+        model_path = models[0].resolve()
+    else:
+        model_path = args.model.resolve()
     out = args.output_dir.resolve()
     if out.is_relative_to(model_path.parent):
         parser.error("Write prepared outputs outside the model case directory")

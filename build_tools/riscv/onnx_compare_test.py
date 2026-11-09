@@ -6,7 +6,8 @@ import numpy as np
 import onnx
 import pytest
 
-from onnx_compare import case_config, case_inputs, compare, inputs_for, main, vector_length
+from onnx_case import case_config, case_inputs, inputs_for
+from onnx_compare import compare, main, vector_length
 
 
 def model(shape):
@@ -112,3 +113,33 @@ def test_vector_length_precedence():
 def test_invalid_vector_lengths(invalid):
     with pytest.raises(ValueError, match="vlen"):
         vector_length({"vlen": invalid})
+
+
+def test_auto_npy_matches_model_input_name(tmp_path):
+    expected = np.arange(8, dtype=np.float32).reshape(2, 4)
+    np.save(tmp_path / "input.npy", expected)
+    config = case_config(tmp_path / "model.onnx")
+    assert config["inputs"] == "input.npy"
+    np.testing.assert_array_equal(inputs_for(model([2, 4]), config, tmp_path)["x"], expected)
+
+
+def test_named_npy_files_for_multiple_inputs(tmp_path):
+    m = model([2, 4])
+    m.graph.input.append(onnx.helper.make_tensor_value_info("other", onnx.TensorProto.FLOAT, [2, 4]))
+    np.save(tmp_path / "first.npy", np.ones((2, 4), dtype=np.float32))
+    np.save(tmp_path / "second.npy", np.zeros((2, 4), dtype=np.float32))
+    config = {"input_files": {"x": "first.npy", "other": "second.npy"}}
+    feeds = inputs_for(m, config, tmp_path)
+    assert np.all(feeds["x"] == 1) and np.all(feeds["other"] == 0)
+    with pytest.raises(ValueError, match="exactly one"):
+        inputs_for(m, {"inputs": "first.npy"}, tmp_path)
+
+
+def test_generator_discovery_and_ambiguous_source(tmp_path):
+    (tmp_path / "generate_input.py").write_text("pass\n")
+    assert case_config(tmp_path / "model.onnx")["input_script"] == "generate_input.py"
+    np.save(tmp_path / "input.npy", np.zeros((2, 4), dtype=np.float32))
+    with pytest.raises(ValueError, match="Multiple input sources"):
+        case_config(tmp_path / "model.onnx")
+    (tmp_path / "model.json").write_text('{"inputs": "input.npy"}')
+    assert "input_script" not in case_config(tmp_path / "model.onnx")

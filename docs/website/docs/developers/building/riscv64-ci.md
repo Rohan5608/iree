@@ -171,7 +171,7 @@ installed host interfaces. Custom RVV e2e checks the model above with RVV
 enabled, but is not exhaustive vector instruction or microkernel coverage.
 
 See [ONNX reference comparison on RISC-V](onnx-model-tests.md) for static model
-folders with `input.py`, data and external weights, PR/nightly/release selection,
+folders with `generate_input.py` or `input.npy`, data and external weights, PR/nightly/release selection,
 input NPZ data, tolerances, and report locations. Dynamic shapes are an explicit
 legacy opt-in rather than the default case format.
 

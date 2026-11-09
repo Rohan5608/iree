@@ -19,135 +19,130 @@ flowchart TD
     H --> I["JUnit XML, JSON results, retained inputs and command logs"]
 ```
 
-## Add a fixed-shape model
+## One common pipeline for every model directory
 
-The recommended organization is one model per directory:
+No case-specific `prepare.py` is needed. Put a model folder below
+`tests/models/onnx/`; discovery and preparation happen automatically:
 
 ```text
-tests/models/onnx/my_case/
+my_model/
   model.onnx
-  input.py
-  model.json          # optional
-  data/               # optional input fixtures
-  weights.bin         # optional external ONNX initializers
+  model.json          # optional tolerances, run_on, VLEN, or explicit inputs
+  input.npy           # one fixed input array
+  weights.data        # optional external weights referenced by model.onnx
 ```
 
-The runner recursively discovers `model.onnx` (or another `.onnx` filename).
-Its sidecar always has the same stem: `model.json` or `my_name.json`. Fixed
-ONNX input dimensions are required by default. The model is not rebuilt by
-`input.py`; that script only prepares input arrays for the already exported model.
+Alternatively, replace `input.npy` with `generate_input.py`. The script receives
+`--output <absolute-file.npz> --model-dir <case-directory> --seed <integer>` and
+must write an NPZ whose keys match the model's graph input names. It may load
+CSV, NPY, or other project fixtures from the case directory. `input.py` is also
+accepted for compatibility. Static ONNX shapes are required by default.
 
-An adjacent `input.py` is automatically selected when neither `inputs` nor
-`input_script` is specified. For a custom filename use
-`"input_script": "make_inputs.py"`. The script is executed once per selected
-model on the host, with the model directory as working directory:
+### Automatic input selection
 
-```sh
-python input.py --output /absolute/run/generated-inputs.npz \
-  --model-dir /absolute/path/to/my_case --seed 0
+An explicit `inputs`, `input_files`, or `input_script` setting takes precedence.
+Without one, the common helper detects exactly one of:
+
+| File | Behavior |
+| --- | --- |
+| `generate_input.py` or `input.py` | Run once to produce named input arrays |
+| `inputs.npz` | Load arrays by graph input name |
+| `input.npy` | Map the single array to the model's sole non-initializer input |
+
+Multiple automatically detected sources fail with an ambiguity error; select
+one explicitly in the manifest. Without any source, the existing deterministic
+synthetic-input fallback remains available for fixed numeric/bool inputs.
+Generated float values use seed 0 in [-1, 1); integers/bools use 0 and 1. Supply
+realistic inputs when these values are unsuitable for the model.
+
+For a different filename or nested data path:
+
+```json
+{"inputs": "data/my_input.npy"}
 ```
 
-A minimal script is:
-
-```python
-import argparse
-from pathlib import Path
-import numpy as np
-
-parser = argparse.ArgumentParser()
-parser.add_argument("--output", type=Path, required=True)
-parser.add_argument("--model-dir", type=Path, required=True)
-parser.add_argument("--seed", type=int, default=0)
-args = parser.parse_args()
-x = np.loadtxt(args.model_dir / "data/input.csv", delimiter=",", dtype=np.float32)
-np.savez(args.output, x=x)  # x must match the ONNX graph input name
-```
-
-Both runtimes consume exactly these arrays; the script is not rerun separately
-for each backend. A failed/timed-out script, missing NPZ, incorrect keys, dtype
-or shape fails the case. Scripts should write generated files to the supplied
-output location rather than modify the checked-in case folder. They run as CI
-code with the job's permissions and should use only dependencies installed in
-the CI environment (NumPy is available).
-
-ONNX initializer weights are not input arrays. Store external weight files at
-the relative locations encoded in `model.onnx`; `onnx.load` reads them from the
-case directory. Preparation loads weights into a separate output model, which
-both backends consume. Missing weights fail the case.
-Additional data is used only when the input script or model explicitly loads it.
-
-The supplied MatMul case uses `x[2,3]` from CSV and external `weights[3,4]`.
-The ReLU case uses a fixed `[2,4]` CSV with negative, zero and positive values.
-
-Place `my_model.onnx` in `tests/models/onnx/` or a subdirectory. Models with
-fixed-shape numeric/bool tensor inputs need no sidecar file. Defaults are:
-
-* Seed 0; reproducible floating inputs uniformly sampled from [-1, 1), and
-  integer/bool inputs sampled from 0 and 1.
-* CPU reference execution using ONNX Runtime 1.22.1.
-* Float comparison with `rtol=1e-4` and `atol=1e-5`:
-  `abs(actual - reference) <= atol + rtol * abs(reference)`.
-* Exact integer/bool comparison; identical output shapes and dtypes required.
-* Both `local-sync` and `local-task` under RVV 1.0 QEMU with VLEN=1024 by default.
-
-These synthetic inputs are smoke coverage, not model accuracy evaluation.
-For token IDs, masks, indices, positive-only inputs, or realistic inference,
-supply meaningful test data. A fixed shape alone does not guarantee generated
-inputs are valid for an operator's semantic constraints.
-
-Flat model files remain supported. When no input generator or NPZ is provided,
-the deterministic synthetic-input fallback described above is used.
-
-## Standalone preparation and custom scripts
-
-The runner delegates model preparation to `build_tools/riscv/prepare_onnx.py`.
-Use the same script locally without discovery, compilation or QEMU:
-
-```sh
-python build_tools/riscv/prepare_onnx.py \
-  --model tests/models/onnx/matmul/model.onnx --output-dir build-prepared/matmul
-```
-
-It resolves external `.data`/`.bin` weights, invokes the case's input script or
-loads configured NPZ data, validates arrays, and writes `model.onnx`,
-`inputs.npz`, and a reusable `model.json` pointing to those saved inputs. Keep
-outputs outside the source case directory; source files remain unchanged.
-
-For case-specific export or preprocessing, supply your own script:
+A single NPY file is accepted only for a model with one runtime input. For
+multiple input arrays, use an explicit name-to-file mapping:
 
 ```json
 {
-  "prepare_script": "prepare.py",
-  "vlen": 1024
+  "input_files": {
+    "x": "data/x.npy",
+    "attention_mask": "data/mask.npy"
+  }
 }
 ```
 
-Its command-line contract is:
+Names, shapes and dtypes must match the model exactly; the helper does not
+silently cast or reshape arrays. Pickled arrays are not accepted. Input arrays
+are distinct from initializer weights: external `.data`/`.bin` files are loaded
+through the relative references in ONNX metadata, not supplied as runtime inputs.
+
+### Prepare one directory locally
 
 ```sh
-python prepare.py --model /absolute/case/model.onnx --output-dir /absolute/run
+python build_tools/riscv/prepare_onnx.py \
+  --model-dir tests/models/onnx/relu --output-dir build-prepared/relu
 ```
 
-It must write `model.onnx` and `inputs.npz` into that output directory. The
-prepared graph must export function `main`; the standard helper handles this
-by setting the ONNX graph name. The runner validates both outputs and compares
-the same prepared model and inputs across ONNX Runtime and IREE. A missing
-output, script failure or timeout fails the case. A custom script is responsible
-for preserving intended model semantics; backend comparison cannot establish
-that arbitrary transformations inside the script are correct.
+The directory must contain exactly one `.onnx` file. For another layout, use
+`--model /absolute/path/to/file.onnx` instead. Prepared files are written outside
+the source case directory:
 
-The checked-in ReLU hook delegates to the common helper and works standalone:
+```text
+build-prepared/relu/
+  model.onnx       # resolved weights and normalized exported function main
+  inputs.npz       # exact named arrays shared by both backends
+  model.json       # points to the saved inputs, preserves test settings
+```
+
+### Prepare and compare one directory
 
 ```sh
-python tests/models/onnx/relu/prepare.py \
-  --model tests/models/onnx/relu/model.onnx --output-dir build-prepared/relu
+python build_tools/riscv/onnx_compare.py \
+  --model-dir tests/models/onnx/relu \
+  --output-dir build-onnx-relu \
+  --compiler /path/to/host/iree-compile \
+  --runner /path/to/riscv/iree-run-module \
+  --qemu /path/to/qemu-riscv64 \
+  --sysroot /path/to/riscv/sysroot
 ```
 
-ReLU's `input.py` loads an existing `.npy` fixture with `np.load(...,
-allow_pickle=False)` and writes the named NPZ. MatMul's script reads CSV. Thus
-model-specific data loading stays in scripts, not the discovery runner. You can
-also run either `input.py` alone using its `--output`, `--model-dir` and `--seed`
-arguments to inspect the generated arrays.
+`--model-dir` and `--models-dir` are aliases: pass one case directory or a root
+collection. The runner discovers files recursively, selects the configured suite,
+invokes common preparation, runs ONNX Runtime on the host, imports/compiles for
+IREE, executes under QEMU on both CPU drivers, and compares all output tensors.
+To diagnose with a native IREE runtime, use `--native` instead of QEMU/sysroot;
+this is not RISC-V coverage.
+
+With the standard host/target build locations already prepared:
+
+```sh
+IREE_ONNX_MODELS_DIR="$PWD/tests/models/onnx/relu" \
+  bash build_tools/riscv/ci_rvv.sh onnx
+```
+
+No workflow changes or model list edits are needed when a new case is added.
+The existing `run_on` manifest still controls PR/nightly/release selection.
+Float defaults are `rtol=1e-4`, `atol=1e-5`; integer/bool comparisons are exact,
+output shapes/dtypes must match, and non-finite values fail.
+
+### Shared implementation
+
+| Responsibility | File |
+| --- | --- |
+| Discovery, suite selection, compilation, execution and comparison | `build_tools/riscv/onnx_compare.py` |
+| Common standalone preparation command | `build_tools/riscv/prepare_onnx.py` |
+| Shared manifest and NPY/NPZ/generator handling | `build_tools/riscv/onnx_case.py` |
+| Optional model-specific input generation | The case's `generate_input.py` |
+
+The checked-in ReLU case needs only its model, manifest and `input.npy`.
+MatMul uses `generate_input.py`, CSV data and external weights. Neither needs
+its own preparation implementation. The advanced `prepare_script` hook remains
+compatible for specialized workflows, but is unnecessary for the standard case
+format. If used, it must produce `model.onnx` exporting `main` and `inputs.npz`;
+both backends compare that same prepared model, so transformations in the hook
+are the hook author's responsibility.
 
 ## ONNX vector width: default 1024 bits
 
@@ -197,7 +192,7 @@ Add a `run_on` list to the model's sidecar to control when it executes:
 ```json
 {
   "static": true,
-  "input_script": "input.py",
+  "input_script": "generate_input.py",
   "run_on": ["nightly", "release"],
   "seed": 123,
   "rtol": 0.0001,
@@ -379,7 +374,7 @@ the model silently.
 
 The script-based preparation path and all three current static cases passed
 actual RISC-V QEMU execution at default VLEN=1024 and explicit `--vlen 512`
-on both CPU drivers. The custom ReLU hook ran standalone. Twenty-one validation
+on both CPU drivers. The common ReLU preparation command ran standalone. Twenty-one validation
 tests passed, including VLEN defaults, precedence and invalid values. Earlier
 512-bit runs below describe the original profile.
 
