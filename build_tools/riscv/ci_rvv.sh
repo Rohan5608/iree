@@ -3,6 +3,17 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 # Standalone Linux host -> riscv64 Linux/RVV CI. Run from any directory.
+#
+# Examples (after installing the prerequisites documented in riscv64-ci.md):
+#   bash build_tools/riscv/ci_rvv.sh all
+#   IREE_RISCV_TEST_PROFILE=standard bash build_tools/riscv/ci_rvv.sh all
+#   IREE_ONNX_MODELS_DIR=/path/to/case bash build_tools/riscv/ci_rvv.sh onnx
+#   IREE_ONNX_SUITE=nightly IREE_ONNX_VLEN=512 bash build_tools/riscv/ci_rvv.sh onnx
+#
+# Stage order: bootstrap -> host -> [lit for standard] -> runtime -> test ->
+# e2e -> onnx -> package. Individual stages reuse existing prerequisites/outputs;
+# invoking `onnx` does not build a missing compiler or cross-runtime automatically.
+# Generated outputs stay in IREE_RISCV_CI_DIR (default: build-riscv-ci).
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
@@ -15,6 +26,8 @@ TOOLS="${CI_DIR}/tools"
 JOBS="${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
 PROFILE="${IREE_RISCV_TEST_PROFILE:-smoke}"
 HOST_BIN="${IREE_HOST_BIN_DIR:-${HOST}/tools}"
+# Source CI uses build-tree host tools. Package CI supplies IREE_HOST_BIN_DIR
+# pointing at the venv where this commit's host wheels were installed.
 case "${PROFILE}" in
   smoke|standard) ;;
   *) echo "IREE_RISCV_TEST_PROFILE must be smoke or standard" >&2; exit 2 ;;
@@ -33,6 +46,7 @@ TEST_TARGETS=(
   iree_vm_ref_test iree_vm_stack_test iree_runtime_task_expanded_sysfs_snapshots
 )
 
+# Download and verify pinned archives before extraction; no compiler build here.
 bootstrap() {
   local base=https://sharkpublic.blob.core.windows.net/sharkpublic/GCP-Migration-Files
   mkdir -p "${TOOLS}/downloads"
@@ -58,6 +72,8 @@ ARTIFACTS
   "${RISCV_TOOLCHAIN_ROOT}/bin/clang" --version
 }
 
+# Build native tools and Python importer bindings. ONNX still needs Torch input
+# support in smoke mode; standard additionally builds host test prerequisites.
 host() {
   local tests=OFF
   if [[ "${PROFILE}" == standard ]]; then tests=ON; fi
@@ -79,12 +95,16 @@ host() {
   fi
 }
 
+# Execute registered compiler lit tests on the host; requires a standard host
+# build. These inspect compiler behavior rather than run RISC-V executables.
 lit() {
   ctest --test-dir "${HOST}/compiler" -L '^test-type=lit-test$' \
     --output-on-failure --no-tests=error --timeout 900 -j "${JOBS}" \
     --output-junit "${CI_DIR}/compiler-lit.xml"
 }
 
+# Cross-build target tools/tests, importing native compile/FlatCC tools from
+# HOST_BIN. Keep host and target build directories separate to avoid ABI mixing.
 runtime() {
   cmake -G Ninja -S . -B "${TARGET}" \
     -DCMAKE_BUILD_TYPE=Release -DIREE_ENABLE_ASSERTIONS=ON \
@@ -105,6 +125,8 @@ runtime() {
   fi
 }
 
+# Standard runs supported runtime/CTS and core e2e suites with upstream RISC-V
+# exclusions. Smoke runs the fixed 11-test selection and verifies its JUnit count.
 test_runtime() {
   if [[ "${PROFILE}" == standard ]]; then
     local exclude='^(nodocker|driver=vulkan|driver=metal|driver=cuda|driver=hip|vulkan_uses_vk_khr_shader_float16_int8|requires-filesystem|requires-dtz|noriscv)$'
@@ -135,6 +157,8 @@ if len(cases) != 11 or any(
 PY
 }
 
+# Existing handwritten MLIR smoke test uses its own 512-bit profile. This is
+# separate from automatically discovered ONNX cases (default VLEN=1024).
 e2e() {
   "${HOST_BIN}/iree-compile" build_tools/riscv/rvv_smoke.mlir \
     --iree-hal-target-device=local --iree-hal-local-target-device-backends=llvm-cpu \
@@ -149,6 +173,8 @@ e2e() {
   done
 }
 
+# Dispatch common ONNX discovery/preparation/comparison. The Python runner owns
+# per-model selection, VLEN, inputs and reports; this wrapper supplies tool paths.
 onnx_tests() {
   local -a args=(
     --suite "${IREE_ONNX_SUITE:-pr}"
@@ -161,6 +187,8 @@ onnx_tests() {
   )
   if [[ -n "${IREE_ONNX_VLEN:-}" ]]; then args+=(--vlen "${IREE_ONNX_VLEN}"); fi
   if [[ "${HOST_BIN}" == "${HOST}/tools" ]]; then
+    # Use importer bindings from the source build, not an unrelated installed
+    # compiler package. Package CI's activated venv already provides its bindings.
     PYTHONPATH="${HOST}/compiler/bindings/python${PYTHONPATH:+:${PYTHONPATH}}" \
       python3 build_tools/riscv/onnx_compare.py "${args[@]}"
   else
@@ -168,6 +196,8 @@ onnx_tests() {
   fi
 }
 
+# Assemble outputs from prior successful stages; this does not build Python
+# wheels, publish releases, or deploy to hardware. Workflow uploads happen later.
 package() {
   local out="${CI_DIR}/artifacts"
   mkdir -p "${out}"

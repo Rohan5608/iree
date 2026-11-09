@@ -144,6 +144,59 @@ format. If used, it must produce `model.onnx` exporting `main` and `inputs.npz`;
 both backends compare that same prepared model, so transformations in the hook
 are the hook author's responsibility.
 
+## Reading and extending the scripts
+
+The scripts contain module-level usage examples, function contracts, and comments
+at the points where filenames, graph ordering or backend settings matter. Read
+them in this order:
+
+1. `onnx_case.py`: `case_config()` reads the manifest and resolves the input
+   source; `case_inputs()` enforces static shapes and optionally invokes a
+   generator; `inputs_for()` validates named arrays and preserves graph order.
+   These utilities return data and raise errors; they do not execute inference.
+2. `prepare_onnx.py`: `main()` resolves one model, loads weights, obtains arrays
+   through those utilities, and writes the prepared bundle. This is the first
+   command to try when adding a model or diagnosing its inputs.
+3. `onnx_compare.py`: `main()` discovers/selects cases and collects reports;
+   `run_model()` coordinates preparation, reference inference, import, compilation
+   and target execution; `compare()` checks each result; `vector_length()` keeps
+   configuration precedence explicit. Case errors are collected without hiding
+   failures behind an overall successful exit code.
+4. `ci_rvv.sh`: stage functions supply the build configuration and tool locations.
+   The final `case` dispatches one requested stage or the complete sequence.
+   Calling only `onnx` expects host/target builds and QEMU to exist already.
+
+For model-specific preprocessing, edit the case's `generate_input.py`. To add a
+new input representation, extend the shared `onnx_case.py` loader and its tests.
+To change backend execution or output validation, edit `onnx_compare.py`.
+Workflow scheduling and wheel installation remain in the workflow YAML files.
+
+Useful local commands from the repository root, using a Python environment with
+`build_tools/riscv/onnx_requirements.txt` and the IREE compiler bindings installed:
+
+```sh
+# Understand available arguments without building or running inference.
+python build_tools/riscv/prepare_onnx.py --help
+python build_tools/riscv/onnx_compare.py --help
+
+# Inspect generator output independently of ONNX import and QEMU.
+python tests/models/onnx/matmul/generate_input.py \
+  --model-dir tests/models/onnx/matmul --output /tmp/matmul-inputs.npz --seed 0
+
+# Prepare either file-backed or generated-input cases with the same command.
+python build_tools/riscv/prepare_onnx.py \
+  --model-dir tests/models/onnx/matmul --output-dir build-prepared/matmul
+
+# Run shared input, comparison and selection checks after modifying helpers.
+python -m pytest -q build_tools/riscv/onnx_compare_test.py
+```
+
+For failures, first locate the model's work directory in `results.json`.
+`prepare.log` captures the preparation subprocess; `input.log`, when generated,
+captures the input script. `commands.log` captures ONNX import, compilation and
+runtime commands. Shape/type/comparison errors also appear in JSON and JUnit.
+The shared `command()` helper preserves subprocess exit failures and timeouts.
+
 ## ONNX vector width: default 1024 bits
 
 ONNX tests now default to VLEN=1024 bits (128 bytes), replacing their earlier

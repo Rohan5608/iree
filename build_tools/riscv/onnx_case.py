@@ -1,6 +1,12 @@
 # Copyright 2026 The IREE Authors
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-"""Shared ONNX case configuration and input preparation utilities."""
+"""Shared case contracts used by preparation and comparison.
+
+A case consists of an ONNX file, an optional same-stem JSON manifest, and input
+data or a generator. This module resolves that configuration and returns named
+NumPy arrays. It does not compile models, run ONNX Runtime, or invoke QEMU.
+See prepare_onnx.py for the standalone CLI and onnx_compare.py for execution.
+"""
 import json
 import subprocess
 import sys
@@ -10,6 +16,21 @@ import onnx
 
 
 def inputs_for(model, config, directory):
+    """Load/generate validated feeds in ONNX graph-input order.
+
+    Args:
+        model: In-memory ModelProto; input shapes are specialized IN PLACE.
+        config: Resolved manifest with inputs, input_files, or generation settings.
+        directory: Base Path for relative input filenames.
+
+    Returns:
+        An insertion-ordered dict of graph input name to contiguous NumPy array.
+        Initializers are excluded because their values are model weights.
+
+    Raises:
+        ValueError for missing/extra names or incompatible types/shapes. Loading
+        errors propagate; supplied arrays are never silently reshaped or cast.
+    """
     initializers = {v.name for v in model.graph.initializer}
     specs = [v for v in model.graph.input if v.name not in initializers]
     if set(config.get("input_shapes", {})) - {v.name for v in specs}:
@@ -20,6 +41,8 @@ def inputs_for(model, config, directory):
     if "inputs" in config:
         filename = directory / config["inputs"]
         if filename.suffix == ".npy":
+            # NPY stores one unnamed array. Only a single-input graph provides
+            # an unambiguous name; multi-input cases must supply a mapping/NPZ.
             if len(specs) != 1:
                 raise ValueError("A single NPY requires exactly one model input; use input_files for multiple inputs")
             provided = {specs[0].name: np.load(filename, allow_pickle=False)}
@@ -33,6 +56,8 @@ def inputs_for(model, config, directory):
         if set(provided) != {v.name for v in specs}:
             raise ValueError("Input keys must exactly match non-initializer input names")
     for spec in specs:
+        # Preserve graph order: IREE's CLI receives positional inputs, whereas
+        # ONNX Runtime accepts a name-to-array dictionary.
         tensor = spec.type.tensor_type
         if not spec.type.HasField("tensor_type") or not tensor.HasField("shape"):
             raise ValueError(f"{spec.name}: only tensor inputs with known rank are supported")
@@ -57,7 +82,8 @@ def inputs_for(model, config, directory):
         if any(d is not None and d != actual for d, actual in zip(declared, value.shape)):
             raise ValueError(f"{spec.name}: input shape does not match fixed model dimensions")
         feeds[spec.name] = np.array(value, copy=True, order="C")
-        # Specialize a copy for import. ORT still runs the original model.
+        # Specialize only the in-memory copy. Preparation saves that copy so
+        # both backends see the same concrete shapes; source files are untouched.
         del tensor.shape.dim[:]
         for size in value.shape:
             tensor.shape.dim.add().dim_value = size
@@ -65,6 +91,11 @@ def inputs_for(model, config, directory):
 
 
 def command(argv, log, timeout, cwd=None):
+    """Run an argument vector without a shell and retain its combined output.
+
+    Nonzero exits and timeouts propagate to the caller as case failures. Flush
+    the command first so its invocation survives even if the subprocess hangs.
+    """
     log.write("$ " + repr([str(v) for v in argv]) + "\n")
     log.flush()
     subprocess.run([str(v) for v in argv], stdout=log, stderr=log,
@@ -72,6 +103,13 @@ def command(argv, log, timeout, cwd=None):
 
 
 def case_config(path):
+    """Read <model-stem>.json and resolve one explicit or detected input source.
+
+    Defaults include all run_on suites. With no explicit input setting, detect
+    generate_input.py, input.py, inputs.npz, or input.npy beside the model.
+    Ambiguity is an error rather than an implicit precedence rule. This function
+    reads configuration only: excluded cases need not load weights/run scripts.
+    """
     sidecar = path.with_suffix(".json")
     config = json.loads(sidecar.read_text()) if sidecar.exists() else {}
     unknown = set(config) - {"seed", "inputs", "input_files", "input_script", "input_shapes",
@@ -86,6 +124,7 @@ def case_config(path):
     if sum(key in config for key in ("inputs", "input_files", "input_script")) > 1:
         raise ValueError("Choose only one of inputs, input_files or input_script")
     if not any(key in config for key in ("inputs", "input_files", "input_script")):
+        # Listing order is not priority: more than one candidate must fail.
         candidates = [("input_script", "generate_input.py"), ("input_script", "input.py"),
                       ("inputs", "inputs.npz"), ("inputs", "input.npy")]
         found = [(key, filename) for key, filename in candidates if (path.parent / filename).is_file()]
@@ -98,6 +137,13 @@ def case_config(path):
 
 
 def case_inputs(model, config, path, work, timeout):
+    """Apply static-shape policy, optionally run a generator, and validate feeds.
+
+    path is the source model Path; work is an existing per-run directory.
+    Generators receive --output, --model-dir and --seed, run in the case
+    directory, and must create the requested named NPZ. input.log captures their
+    diagnostics. A generator failure never falls back to random test inputs.
+    """
     if not isinstance(config.get("static", True), bool):
         raise ValueError("static must be a JSON boolean")
     if config.get("static", True):
@@ -111,6 +157,7 @@ def case_inputs(model, config, path, work, timeout):
             ):
                 raise ValueError(f"{spec.name}: static case requires fixed ONNX input shapes")
     config = dict(config)
+    # Avoid replacing the caller's manifest with the generated artifact path.
     if "input_script" in config:
         script = (path.parent / config["input_script"]).resolve()
         if not script.is_file():
